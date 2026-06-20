@@ -1,23 +1,11 @@
-"""Phase-2 problem bank for the SURF SQL tutor.
+"""Problem bank for the SURF SQL tutor.
 
-Each problem is a self-contained, SQLite-dialect exercise:
-  (schema DDL, natural-language prompt, human-vetted gold query, target clauses,
-   data-generation requirements, and a deterministic `check` over the gold result).
-
-Provenance: the gold queries are distilled from Daksh's real CS284 mysql command
-history (`sql_commands_history_from_cs284`) and were vetted against the live course
-database on `warren.sewanee.edu` (via `joy`) before being ported to SQLite.  Schemas
-are reduced to the columns each problem actually touches — these are standalone
-exercises, not the full course DB.
-
-The `check(conn, rows)` functions are the validation backbone of the populator.  They
-raise AssertionError(<message>) when the populated data fails to *exercise* the target
-clauses (e.g. a LIMIT that never truncates, a GROUP BY with one group, a filter that
-excludes nothing).  The message is fed back to the authoring model in the repair loop.
-
-`conn` is a live sqlite3 connection to the populated in-memory DB, so checks can issue
-their own reference queries to confirm the gold result is correct and non-trivial.
-`rows` is the gold query's result as a list of tuples.
+Each problem is a self-contained, SQLite-dialect exercise: schema DDL, a
+natural-language prompt, a gold query, the SQL clauses the data must exercise,
+data-generation requirements, and a deterministic `check(conn, rows)` over the
+gold result. A check raises AssertionError(<message>) when the populated data
+fails to exercise the target clauses (e.g. a LIMIT that never truncates, a
+GROUP BY with one group); the message feeds the authoring model's repair loop.
 """
 from __future__ import annotations
 
@@ -80,15 +68,7 @@ def _sorted_by(rows, keyfns, msg):
             _assert(ok, f"{msg}: rows out of order at position {i} on column {idx}")
             break
 
-# ===========================================================================
-# Problem bank.
-#
-# This public, empty-set build ships with NO built-in problems: the original
-# CS284-derived exercises (and their human-vetted gold SQL) are intentionally
-# omitted so answers are not exposed. Instructors author their own problems at
-# runtime through the in-app authoring flow; the dataclass + helpers above are
-# the machinery the rest of the codebase imports.
-# ===========================================================================
+# Problems are authored at runtime through the in-app authoring flow.
 PROBLEMS: list[Problem] = []
 
 BY_ID = {p.id: p for p in PROBLEMS}

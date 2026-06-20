@@ -20,10 +20,7 @@ webapp/frontend/.vite/
 webapp/desktop/release/
 webapp/desktop-macos/release/
 
-# ---- Runtime data (NOT source) ----
-# Instructor-authored problem sets, baked bundles, class codes, attempt logs and
-# local config are all created at runtime. This ships as an empty-set app: there
-# are no built-in problems, so nothing here is committed.
+# ---- Runtime data (created at runtime, not source) ----
 webapp/data/sets/
 webapp/data/bundles/
 webapp/data/classes/
