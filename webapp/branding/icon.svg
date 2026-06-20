@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Run·Diff app icon (dock / Finder): a database wearing a graduation cap. The mortarboard
+       rests on top of the database (it does not cut into it); the tassel drapes over the right
+       edge and hangs down with a knot. The disk-separator lines are inset, round-capped smiles
+       so they never overshoot the cylinder's sides. Ink ground, paper database, lime cap
+       (palette: ink #1a180f, paper #f4f0e6, lime #c4ec2b). Button + tassel are paper so they read
+       against both the lime cap and the ink ground. -->
+
+  <!-- rounded-square ground (macOS icon grid, ~10% inset) -->
+  <rect x="92" y="92" width="840" height="840" rx="196" fill="#1a180f"/>
+
+  <!-- database cylinder (paper), sitting under the cap -->
+  <g>
+    <path d="M352 582 V792 A160 52 0 0 0 672 792 V582" fill="#f4f0e6"/>
+    <ellipse cx="512" cy="582" rx="160" ry="52" fill="#f4f0e6"/>
+    <!-- disk-separator smiles: inset from the sides + round caps → no side nubs -->
+    <path d="M366 652 Q512 690 658 652" fill="none" stroke="#1a180f" stroke-width="18" stroke-linecap="round"/>
+    <path d="M366 722 Q512 760 658 722" fill="none" stroke="#1a180f" stroke-width="18" stroke-linecap="round"/>
+  </g>
+
+  <!-- graduation cap (lime mortarboard) resting on the database -->
+  <g>
+    <polygon points="512,240 816,384 512,528 208,384" fill="#c4ec2b"/>
+    <!-- center button -->
+    <circle cx="512" cy="384" r="27" fill="#f4f0e6"/>
+    <!-- tassel: drape over the right edge, hang down, knot at the end -->
+    <path d="M512 384 Q720 400 752 456 L752 620" fill="none" stroke="#f4f0e6"
+          stroke-width="20" stroke-linecap="round"/>
+    <circle cx="752" cy="636" r="26" fill="#f4f0e6"/>
+  </g>
+</svg>

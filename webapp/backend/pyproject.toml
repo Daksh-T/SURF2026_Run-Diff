@@ -1,0 +1,21 @@
+[project]
+name = "surf-tutor-backend"
+version = "0.1.0"
+description = "FastAPI backend for the SURF SQL tutor web app (wraps the grader, tutor harness, and instructor authoring flow)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    "sqlglot>=25",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

@@ -1,0 +1,160 @@
+name: Build & Release
+
+# A release is cut on every merged PR (name = PR title, notes = PR body), and can also be
+# triggered manually (used for the initial release). Each run builds the desktop app for
+# macOS arm64, macOS x86_64, and Linux x86_64, then publishes them to a single GitHub Release.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate everything on "merged PR" or "manual dispatch" — a PR closed without merging builds nothing.
+  guard:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    steps:
+      - run: echo "Proceeding (event=${{ github.event_name }})"
+
+  build-macos:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build frontend
+        working-directory: webapp/frontend
+        run: |
+          bun install
+          bun run build
+
+      - name: Build backend sidecar (PyInstaller)
+        working-directory: webapp/backend
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+
+      - name: Build macOS app (.app + .dmg)
+        working-directory: webapp/desktop-macos
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ github.run_number }}
+        run: |
+          chmod +x build.sh
+          ./build.sh --dmg
+          mkdir -p ../../out
+          cp "release/Run·Diff.dmg" "../../out/RunDiff-macOS-${{ matrix.arch }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*.dmg
+          if-no-files-found: error
+
+  build-linux:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        working-directory: webapp/frontend
+        run: |
+          bun install
+          bun run build
+
+      - name: Build backend sidecar (PyInstaller)
+        working-directory: webapp/backend
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+
+      - name: Build Linux app (AppImage)
+        working-directory: webapp/desktop
+        run: |
+          npm install
+          npm run dist
+
+      - name: Collect AppImage
+        run: |
+          mkdir -p out
+          cp webapp/desktop/release/*.AppImage "out/RunDiff-Linux-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: out/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute release metadata
+        id: meta
+        run: |
+          TAG="v$(date -u +%Y.%m.%d).${{ github.run_number }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            NAME=$(printf '%s' "${{ github.event.pull_request.title }}")
+            [ -n "$NAME" ] || NAME="$TAG"
+          else
+            NAME="Manual release $TAG"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        id: notes
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          {
+            echo 'body<<EOF_NOTES'
+            if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$PR_BODY" ]; then
+              printf '%s\n' "$PR_BODY"
+            else
+              echo "Automated build of the Run·Diff desktop app (macOS arm64 / x86_64, Linux x86_64)."
+            fi
+            echo 'EOF_NOTES'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          body: ${{ steps.notes.outputs.body }}
+          files: artifacts/**/*
+          fail_on_unmatched_files: true

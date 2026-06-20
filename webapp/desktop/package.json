@@ -1,0 +1,52 @@
+{
+  "name": "rundiff-desktop",
+  "productName": "Run·Diff",
+  "version": "0.1.0",
+  "description": "Run·Diff — the SURF SQL tutor, as a desktop app",
+  "main": "main.js",
+  "author": "SURF",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron .",
+    "build:frontend": "cd ../frontend && bun run build",
+    "build:backend": "cd ../backend && uv run --with pyinstaller pyinstaller rundiff_backend.spec --noconfirm --distpath dist_backend --workpath build_backend",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "edu.sewanee.surf.rundiff",
+    "productName": "Run·Diff",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist_backend/rundiff-backend",
+        "to": "rundiff-backend"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "dist"
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.education",
+      "identity": null
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Education",
+      "icon": "../branding/AppIcon.icns"
+    }
+  }
+}

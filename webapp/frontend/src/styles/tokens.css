@@ -1,0 +1,97 @@
+/* ------------------------------------------------------------------ *
+ * Design tokens. The whole look lives here.
+ *
+ * Ethos: fast, dense, functional — beautiful because it's good (the
+ * McMaster-Carr feeling), not because it's decorated. No icon-in-rounded-
+ * square chrome, no decorative serifs, no italic sprinkles, mono is used
+ * ONLY for SQL. The one bit of attitude is the acid-lime focus colour: it
+ * is the "wrong, slightly evil" note against the warm-paper utility.
+ * ------------------------------------------------------------------ */
+:root {
+  /* type */
+  --font-display: "Special Gothic Expanded One", system-ui, sans-serif; /* masthead + big numerals */
+  --font-ui: "Funnel Sans", system-ui, sans-serif;                      /* chrome, headings, buttons */
+  --font-read: "Commissioner", system-ui, sans-serif;                   /* problem prompts, prose */
+  --font-mono: "Spline Sans Mono", ui-monospace, "SF Mono", monospace;  /* SQL only */
+
+  /* warm paper palette — never pure white, never pure black */
+  --paper:    #f4f0e6;  /* app background */
+  --surface:  #fbf9f2;  /* cards, panels */
+  --surface-2:#efeada;  /* sunken wells, table headers */
+  --ink:      #1a180f;  /* primary text */
+  --ink-2:    #5a554840;/* hairline borders (ink at low alpha) */
+  --muted:    #6c6757;  /* secondary text */
+  --line:     #d9d2bf;  /* dividers, input borders */
+
+  /* brand + semantics. green is "the good path", lime is attention/focus,
+     red is the only failure colour. */
+  --green:    #0c5a3f;
+  --green-ink:#06301f;
+  --lime:     #c4ec2b;  /* acid focus highlight — used sparingly */
+  --red:      #bb2f1c;
+  --red-wash: #f6e2dd;
+  --green-wash:#e1ecdf;
+  --amber:    #b06d00;
+
+  /* difficulty dots */
+  --easy:  #0c5a3f;
+  --medium:#b06d00;
+  --hard:  #bb2f1c;
+
+  /* geometry — restrained radii, no pill blobs */
+  --r-sm: 3px;
+  --r-md: 5px;
+  --r-lg: 7px;
+
+  /* depth — used very lightly; flatness reads as fast */
+  --shadow: 0 1px 0 #00000010, 0 1px 2px #0000000d;
+  --shadow-pop: 0 6px 24px #1a180f1f;
+
+  /* rhythm */
+  --gap: 16px;
+  --bar-h: 52px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* never let prose go italic by accident — italics are opt-in only */
+em, i { font-style: normal; }
+
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+::selection { background: var(--lime); color: var(--ink); }
+
+h1, h2, h3 { font-family: var(--font-ui); font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+
+/* the wordmark / masthead — the one place the expanded display face appears */
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+/* big numerals (problem index, score) reuse the display face for character */
+.numeral { font-family: var(--font-display); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+code, kbd, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+
+button { font-family: var(--font-ui); cursor: pointer; }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-thumb { background: #c7bfa8; border: 3px solid var(--paper); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #b3aa8e; }

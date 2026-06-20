@@ -1,0 +1,4 @@
+
+# PyInstaller sidecar build output
+dist_backend/
+build_backend/
