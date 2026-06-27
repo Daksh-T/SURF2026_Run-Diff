@@ -120,8 +120,13 @@ def _offline_hint(ctx: dict, gr: grader.GradeResult, level: int) -> str:
         return ("Your result set doesn't match: you're including or excluding the wrong rows. "
                 "Re-read which rows the question actually asks for.")
     if level == 2:
-        return ("Look at how you filter and aggregate — revisit: "
-                + ", ".join(clauses[:3]) + ". One of these isn't doing what the prompt requires.")
+        # name the clauses to revisit when we know them; otherwise stay generic rather than
+        # emitting an empty "revisit: ." (a problem can carry no derived target_clauses).
+        if clauses:
+            return ("Look at how you filter and aggregate — revisit: "
+                    + ", ".join(clauses[:3]) + ". One of these isn't doing what the prompt requires.")
+        return ("Look at how you filter and aggregate — one of your clauses isn't doing what "
+                "the prompt requires.")
     return ("Sketch the shape first: `SELECT ___ FROM ___ "
             + ("GROUP BY ___ " if any("GROUP" in c.upper() for c in clauses) else "WHERE ___ ")
             + "` and fill the blanks from the prompt — don't copy any answer.")

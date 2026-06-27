@@ -416,21 +416,6 @@ def _author_state(prompt: str, gold_sql: str, model_name: str, title: str,
     }
 
 
-def author_batch(table_hint: str, items: list[dict], model_name: str,
-                  on_progress=None) -> dict:
-    """Assignment-mode batch authoring: one shared table, several questions.
-
-    Infers ONE schema for the whole set from `table_hint` + every item's gold_sql, then runs
-    `author()` per item against that shared ddl. Keeps going past individual item failures —
-    each entry in `items` of the result is an `author()` result (status 'ok' or 'error')."""
-    result = author_batch_sections([{"table_hint": table_hint, "items": items}],
-                                    model_name, on_progress=on_progress)
-    if result["status"] != "ok":
-        return result
-    section = result["sections"][0]
-    return {"status": "ok", "ddl": section["ddl"], "items": section["items"]}
-
-
 def author_batch_sections(sections: list[dict], model_name: str,
                             on_progress=None) -> dict:
     """Multi-section assignment authoring: each section has its own table hint (own schema)

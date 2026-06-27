@@ -843,10 +843,6 @@ function AuthorResult({ r, onAdd, onReauthor, running }) {
         </div>
       )}
 
-      {!r.prediction && r.prediction_note && (
-        <div className="hint-line" style={{ display: "block", marginBottom: 12 }}>{r.prediction_note}</div>
-      )}
-
       <div className="section-label"><span className="eyebrow">Inferred schema</span></div>
       <Schema ddl={r.problem.schema} />
 
@@ -857,8 +853,10 @@ function AuthorResult({ r, onAdd, onReauthor, running }) {
       {r.enforced_nudges?.length > 0 && (
         <div className="nudge-guarantee" style={{ marginTop: 14 }}>
           Guaranteed in the data: {r.enforced_nudges
-            .map((id) => nudges.find((n) => n.id === id)?.column || id)
-            .join(", ")}
+            // search the FULL nudge list (the open-questions `nudges` has enforced ones filtered
+            // out); show the plain-English question, falling back to the raw id if unmatched.
+            .map((id) => (r.nudges || []).find((n) => n.id === id)?.question || id)
+            .join("; ")}
         </div>
       )}
 
