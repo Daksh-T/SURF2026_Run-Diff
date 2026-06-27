@@ -4,7 +4,7 @@
 // bluebird crash before reaching build logic). @electron/packager is lighter and works. It emits
 // an unsigned .app bundle in release/. We carry the PyInstaller sidecar and the built frontend
 // dist as extraResource entries, landing them in Contents/Resources/ where main.js looks
-// (process.resourcesPath / {rundiff-backend, frontend-dist}).
+// (process.resourcesPath / {rundiff-backend, dist}).
 
 import { packager } from "@electron/packager";
 import path from "node:path";

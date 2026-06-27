@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -127,6 +127,33 @@ def require_author(x_author_key: str | None = Header(default=None)) -> None:
         raise HTTPException(401, "author password required")
 
 
+# Loopback addresses the local app window (and the dev proxy) always originate from.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+# Opt-in escape hatch for the undocumented "headless backend + remote-browser admin" setup.
+_ALLOW_REMOTE_ADMIN = os.environ.get("RUNDIFF_ALLOW_REMOTE_ADMIN", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def require_local(request: Request) -> None:
+    """Local-only gate for instructor/admin endpoints. The Author UI (and the dev proxy) only
+    ever reach these over loopback — students and cross-machine sync use /api/student/* and
+    /api/sync/* instead — so binding the backend to 0.0.0.0 for class hosting must NOT expose
+    the admin surface to other devices on the LAN. Without this, a class server with no author
+    password set would let any LAN peer drive authoring/publishing/class management.
+
+    Set RUNDIFF_ALLOW_REMOTE_ADMIN=1 to deliberately allow LAN admin (the rare self-hosted,
+    headless-backend case where the instructor drives the UI from another machine's browser)."""
+    if _ALLOW_REMOTE_ADMIN:
+        return
+    client = request.client.host if request.client else None
+    if client not in _LOOPBACK_HOSTS:
+        raise HTTPException(
+            403,
+            "the instructor/admin API is local-only on this machine; set "
+            "RUNDIFF_ALLOW_REMOTE_ADMIN=1 to allow access from other devices on the network",
+        )
+
+
 @app.get("/api/auth/status")
 def auth_status():
     return {"password_set": bool(config.load().get("author_password_sha256"))}
@@ -137,7 +164,7 @@ class SetPasswordReq(BaseModel):
     current: str | None = None
 
 
-@app.post("/api/auth/set")
+@app.post("/api/auth/set", dependencies=[Depends(require_local)])
 def auth_set(req: SetPasswordReq):
     if not req.password:
         raise HTTPException(400, "password must not be empty")
@@ -154,7 +181,7 @@ class ClearPasswordReq(BaseModel):
     current: str
 
 
-@app.post("/api/auth/clear")
+@app.post("/api/auth/clear", dependencies=[Depends(require_local)])
 def auth_clear(req: ClearPasswordReq):
     """Remove the author password entirely (authoring goes open). Requires the current
     password so a locked-out visitor can't simply clear it."""
@@ -176,7 +203,8 @@ def auth_check(req: CheckPasswordReq):
     return {"ok": (not expected) or _sha256(req.password) == expected}
 
 
-instructor_router = APIRouter(prefix="/api/instructor", dependencies=[Depends(require_author)])
+instructor_router = APIRouter(
+    prefix="/api/instructor", dependencies=[Depends(require_local), Depends(require_author)])
 
 
 # =========================================================================== #

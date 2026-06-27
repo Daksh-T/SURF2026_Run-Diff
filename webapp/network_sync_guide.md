@@ -99,8 +99,14 @@ the file path always works.
 ## Security model
 
 - The class server binds to the LAN while Run·Diff is running. **Instructor/authoring endpoints
-  stay password-gated** (set a password under *Author*). Student endpoints (join, fetch
-  assignment, sync attempts) are reachable on the LAN by design.
+  are local-only**: they answer only requests coming from this machine (loopback), so binding to
+  the LAN to host a class never exposes authoring, publishing, or class management to other
+  devices — even before you set an author password. The optional author password is a second
+  layer on top of that (and is what gates the local UI on a shared machine). Student endpoints
+  (join, fetch assignment, sync attempts) are reachable on the LAN by design.
+  - *Self-hosting note:* if you intentionally run the backend headless and drive the Author UI
+    from another machine's browser over the LAN, set `RUNDIFF_ALLOW_REMOTE_ADMIN=1` to allow it
+    (then a password is strongly recommended). This is off by default.
 - **The class code is the credential.** Anyone on the LAN who knows a class code can fetch that
   class's assignment — exactly like handing out the file. Assignments are **student-safe**: they
   contain baked gold *results*, never gold SQL, and are sealed on the wire.

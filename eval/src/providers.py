@@ -21,7 +21,10 @@ GEMINI_KEY = os.environ.get("aistudio_api_key", "")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-OLLAMA_URL = "http://localhost:11434/api/chat"
+# Honor OLLAMA_HOST so a non-default Ollama address works everywhere — the webapp's
+# setup_ollama.py already reads this env var, and hint generation must hit the same host.
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_URL = f"{OLLAMA_HOST}/api/chat"
 
 # (provider, model_id) registry. Display name -> spec.
 MODELS = {

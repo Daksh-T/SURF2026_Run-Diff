@@ -97,7 +97,7 @@ def _normalize(c: dict) -> dict:
     c.setdefault("status", "active")        # "active" | "archived"
     c.setdefault("active_from", None)        # ISO; before this the code is not yet live
     c.setdefault("active_until", None)       # ISO; after this the code stops working
-    c.setdefault("passcodes", {})            # name -> 2-word personal passcode (passcode mode)
+    c.setdefault("passcodes", {})            # name -> 3-word personal passcode (passcode mode)
     # live session control, separate from status/scheduling:
     #   "running" (normal) | "paused" (no submit, no hints) | "ended" (submit current Q only, no hints)
     c.setdefault("session_state", "running")
@@ -299,7 +299,7 @@ def join(passphrase: str, name: str) -> dict:
     code = passphrase.strip().lower()
     student = name.strip()
 
-    # passcode mode: the student types their personal 2-word code and no name. Try that first
+    # passcode mode: the student types their personal 3-word code and no name. Try that first
     # so a personal passcode never needs a separate "class code" field.
     hit = _find_by_passcode(code)
     if hit is not None:
