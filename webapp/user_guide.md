@@ -36,6 +36,9 @@ You'll see a "Join your class" screen with two options:
 1. **Join code + name** — your instructor gives you a three-word code (e.g.
    `maple-river-stone`). Enter it with your name and you're in. If your class uses a roster,
    your name is matched against it (case doesn't matter); if it's open, any name works.
+   - **Personal passcode** — some classes hand each student their *own* three-word passcode
+     instead of a shared class code. If you were given one, enter it in the same code box and
+     leave the name field blank — your name is recognized from the passcode itself.
 2. **Load an assignment file** — if your instructor sent you a file instead (for offline or
    no-shared-server setups), use "load an assignment file" and pick it. This installs the
    class and its problems locally — the join code in the file then works the same way.

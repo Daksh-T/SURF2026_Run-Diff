@@ -3,11 +3,12 @@ import { api } from "../lib/api.js";
 import { HBar, StackedHBar, StackedLegend, MiniBars } from "../components/charts.jsx";
 import SessionControls from "../components/SessionControls.jsx";
 
-// hint level -> the clause-naming language used at that rung (harness._LEVEL_RULES)
+// hint level -> the language used at that rung. L1/L2 are model-written (harness._LEVEL_RULES);
+// L3 is the deterministic diverging-rows evidence rendered client-side — never a query skeleton.
 const HINT_LEVEL_LABEL = {
   1: "a conceptual nudge",
   2: "naming the clause",
-  3: "a query skeleton",
+  3: "the diverging rows",
 };
 
 const DIFF_LABEL = { easy: "Easy", medium: "Medium", hard: "Hard" };
@@ -527,7 +528,7 @@ export default function Insights() {
                         items={[
                           { className: "stacked-seg-l1", label: "L1 — conceptual nudge" },
                           { className: "stacked-seg-l2", label: "L2 — naming the clause" },
-                          { className: "stacked-seg-l3", label: "L3 — query skeleton" },
+                          { className: "stacked-seg-l3", label: "L3 — diverging rows" },
                         ]}
                       />
                       <div className="hbar-chart">
@@ -652,12 +653,12 @@ export default function Insights() {
                           </div>
                           <div className="ins-statlabel">comparison</div>
                         </div>
-                        {active.predicted.solved_unaided_rate != null && (
+                        {active.predicted.solved_unaided != null && active.predicted.trials ? (
                           <div className="ins-statbox">
-                            <div className="ins-statval">{fmtPct(active.predicted.solved_unaided_rate)}</div>
+                            <div className="ins-statval">{fmtPct(active.predicted.solved_unaided / active.predicted.trials)}</div>
                             <div className="ins-statlabel">predicted solved unaided</div>
                           </div>
-                        )}
+                        ) : null}
                       </div>
                     </>
                   )}
