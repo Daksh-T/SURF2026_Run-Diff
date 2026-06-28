@@ -1,8 +1,8 @@
 name: PR Build
 
 # Validation-only: builds every desktop target (including Windows) on each PR so the cross-platform
-# bundles — especially the Tauri Windows build — prove themselves green before merge. Cuts NO
-# release (that's release.yml, on merge). Artifacts are uploaded for manual download/inspection.
+# bundles prove themselves green before merge. Cuts NO release (that's release.yml, on merge), but
+# artifacts are release-ready so a merged PR can promote them without rebuilding.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -21,10 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
@@ -35,9 +41,10 @@ jobs:
         working-directory: webapp/desktop-macos
         env: { ARCH: arm64, VERSION: "${{ github.run_number }}" }
         run: |
-          chmod +x build.sh && ./build.sh
+          chmod +x build.sh && ./build.sh --dmg
+          mkdir -p ../../out && cp "release/Run·Diff.dmg" "../../out/RunDiff-macOS-arm64.dmg"
       - uses: actions/upload-artifact@v4
-        with: { name: pr-macos-arm64, path: webapp/desktop-macos/release/*.app/Contents/Info.plist, if-no-files-found: error }
+        with: { name: macos-arm64, path: out/*.dmg, if-no-files-found: error }
 
   # Linux: lean Tauri shell (WebKitGTK).
   build-linux:
@@ -45,10 +52,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: Install WebKitGTK + bundling deps
         run: |
           sudo apt-get update
@@ -56,7 +73,7 @@ jobs:
             libayatana-appindicator3-dev patchelf
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
@@ -67,12 +84,12 @@ jobs:
         working-directory: webapp/desktop-tauri
         run: ./prep-resources.sh
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        run: command -v cargo-tauri || cargo install tauri-cli --version "^2.0" --locked
       - name: Build Tauri bundle
         working-directory: webapp/desktop-tauri/src-tauri
         run: cargo tauri build --bundles appimage
       - uses: actions/upload-artifact@v4
-        with: { name: pr-linux-x86_64, path: webapp/desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage, if-no-files-found: error }
+        with: { name: linux-x86_64, path: webapp/desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage, if-no-files-found: error }
 
   # Windows: Tauri shell (WebView2). This is the build the PR is meant to prove green.
   build-windows:
@@ -80,14 +97,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri.exe
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: Build frontend
         working-directory: webapp/frontend
         shell: bash
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         shell: bash
@@ -100,7 +127,8 @@ jobs:
         shell: bash
         run: ./prep-resources.sh
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        shell: bash
+        run: command -v cargo-tauri || cargo install tauri-cli --version "^2.0" --locked
       - name: Build Tauri bundle
         working-directory: webapp/desktop-tauri/src-tauri
         run: cargo tauri build
@@ -109,7 +137,7 @@ jobs:
         run: ls -la webapp/desktop-tauri/src-tauri/target/release/bundle/msi webapp/desktop-tauri/src-tauri/target/release/bundle/nsis
       - uses: actions/upload-artifact@v4
         with:
-          name: pr-windows-x86_64
+          name: windows-x86_64
           path: |
             webapp/desktop-tauri/src-tauri/target/release/bundle/msi/*.msi
             webapp/desktop-tauri/src-tauri/target/release/bundle/nsis/*-setup.exe

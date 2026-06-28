@@ -1,8 +1,7 @@
 name: Build & Release
 
-# Cuts a GitHub Release on each merged PR (release name = PR title, notes = PR body),
-# and on manual dispatch. Builds the desktop app for macOS arm64/x86_64 (Swift WKWebView shell),
-# Windows x86_64 (Tauri, .msi + .exe) and Linux x86_64 (Tauri AppImage).
+# Merged PRs promote the release-ready artifacts from PR Build. Manual dispatch still builds from
+# source because there is no PR artifact set to promote.
 on:
   pull_request:
     types: [closed]
@@ -14,25 +13,66 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
-  guard:
+  release-merged-pr:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
     steps:
-      - run: echo "event=${{ github.event_name }}"
+      - name: Download PR build artifacts
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          workflow: build.yml
+          pr: ${{ github.event.pull_request.number }}
+          workflow_conclusion: success
+          path: artifacts
+          merge_multiple: true
+          if_no_artifact_found: fail
+      - name: Release metadata
+        id: meta
+        run: |
+          tag="v$(date -u +%Y.%m.%d).${{ github.run_number }}"
+          {
+            echo "tag=$tag"
+            echo "name=Run·Diff $tag"
+          } >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        id: notes
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          {
+            echo 'body<<EOF_NOTES'
+            printf '%s\n\n%s\n' "$PR_TITLE" "$PR_URL"
+            echo 'EOF_NOTES'
+          } >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          body: ${{ steps.notes.outputs.body }}
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
 
   build-macos-arm:
-    needs: guard
     runs-on: macos-14
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
@@ -48,44 +88,26 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: macos-arm64, path: out/*.dmg, if-no-files-found: error }
 
-  # Intel macOS runners can queue for a long time, so this is best-effort: the release does
-  # not wait on it. The .dmg attaches whenever the runner is available in time.
-  build-macos-intel:
-    needs: guard
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: oven-sh/setup-bun@v2
-      - name: Build frontend
-        working-directory: webapp/frontend
-        run: bun install && bun run build
-      - name: Build backend sidecar
-        working-directory: webapp/backend
-        run: |
-          uv sync
-          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
-            --noconfirm --distpath dist_backend --workpath build_backend
-      - name: Build macOS app
-        working-directory: webapp/desktop-macos
-        env: { ARCH: x86_64, VERSION: "${{ github.run_number }}" }
-        run: |
-          chmod +x build.sh && ./build.sh --dmg
-          mkdir -p ../../out && cp "release/Run·Diff.dmg" "../../out/RunDiff-macOS-x86_64.dmg"
-      - uses: actions/upload-artifact@v4
-        with: { name: macos-x86_64, path: out/*.dmg, if-no-files-found: error }
-
-  # Lean Tauri shell (WebKitGTK) — replaces the old ~279 MB Electron AppImage path.
   build-linux:
-    needs: guard
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: Install WebKitGTK + bundling deps
         run: |
           sudo apt-get update
@@ -93,7 +115,7 @@ jobs:
             libayatana-appindicator3-dev patchelf
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
@@ -104,7 +126,7 @@ jobs:
         working-directory: webapp/desktop-tauri
         run: ./prep-resources.sh
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        run: command -v cargo-tauri || cargo install tauri-cli --version "^2.0" --locked
       - name: Build Tauri bundle
         working-directory: webapp/desktop-tauri/src-tauri
         run: cargo tauri build --bundles appimage
@@ -116,21 +138,30 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: linux-x86_64, path: out/*.AppImage, if-no-files-found: error }
 
-  # Tauri shell on Windows (WebView2, preinstalled on windows-latest) -> .msi + NSIS .exe.
   build-windows:
-    needs: guard
     runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('webapp/frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri.exe
+          key: cargo-tauri-${{ runner.os }}-v2
       - name: Build frontend
         working-directory: webapp/frontend
         shell: bash
-        run: bun install && bun run build
+        run: bun install --frozen-lockfile && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         shell: bash
@@ -143,7 +174,8 @@ jobs:
         shell: bash
         run: ./prep-resources.sh
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        shell: bash
+        run: command -v cargo-tauri || cargo install tauri-cli --version "^2.0" --locked
       - name: Build Tauri bundle
         working-directory: webapp/desktop-tauri/src-tauri
         run: cargo tauri build
@@ -157,33 +189,27 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: windows-x86_64, path: out/*, if-no-files-found: error }
 
-  release:
-    needs: [build-macos-arm, build-linux, build-windows] # Intel is best-effort and intentionally not required
+  release-manual:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build-macos-arm, build-linux, build-windows]
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts, merge-multiple: true }
       - name: Release metadata
         id: meta
         run: |
-          echo "tag=v$(date -u +%Y.%m.%d).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "name=${{ github.event.pull_request.title }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=Run·Diff v$(date -u +%Y.%m.%d).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          fi
+          tag="v$(date -u +%Y.%m.%d).${{ github.run_number }}"
+          {
+            echo "tag=$tag"
+            echo "name=Run·Diff $tag"
+          } >> "$GITHUB_OUTPUT"
       - name: Release notes
         id: notes
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           {
             echo 'body<<EOF_NOTES'
-            if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$PR_BODY" ]; then
-              printf '%s\n' "$PR_BODY"
-            else
-              echo "Run·Diff desktop app (macOS arm64 / x86_64, Windows x86_64, Linux x86_64)."
-            fi
+            echo "Manual Run·Diff desktop release."
             echo 'EOF_NOTES'
           } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
@@ -192,4 +218,4 @@ jobs:
           name: ${{ steps.meta.outputs.name }}
           body: ${{ steps.notes.outputs.body }}
           files: artifacts/**/*
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
