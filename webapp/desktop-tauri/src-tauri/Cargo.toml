@@ -1,0 +1,26 @@
+[package]
+name = "rundiff-tauri"
+version = "0.1.0"
+description = "Run·Diff — the SURF SQL tutor, as a lean cross-platform desktop app"
+authors = ["SURF"]
+edition = "2021"
+rust-version = "1.77"
+
+# The binary is the desktop shell.
+[[bin]]
+name = "rundiff-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

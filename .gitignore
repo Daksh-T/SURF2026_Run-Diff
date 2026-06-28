@@ -19,6 +19,12 @@ webapp/frontend/.vite/
 # ---- Desktop build outputs ----
 webapp/desktop/release/
 webapp/desktop-macos/release/
+webapp/desktop-tauri/src-tauri/target/
+webapp/desktop-tauri/src-tauri/gen/
+webapp/desktop-tauri/src-tauri/resources/
+
+# ---- Project-local Rust toolchain (for the Tauri shell; never commit) ----
+.toolchain/
 
 # ---- Runtime data (created at runtime, not source) ----
 webapp/data/sets/
