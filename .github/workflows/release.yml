@@ -1,7 +1,7 @@
 name: Build & Release
 
-# Merged PRs promote the release-ready artifacts from PR Build. Manual dispatch still builds from
-# source because there is no PR artifact set to promote.
+# Every merged PR should release. When the PR build already has a complete artifact set, promote
+# those files; otherwise rebuild all release targets and publish the regenerated artifacts.
 on:
   pull_request:
     types: [closed]
@@ -17,12 +17,16 @@ permissions:
   contents: write
 
 jobs:
-  release-merged-pr:
+  prepare-pr-artifacts:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    outputs:
+      complete: ${{ steps.check.outputs.complete }}
     steps:
       - name: Download PR build artifacts
+        id: download
         uses: dawidd6/action-download-artifact@v11
+        continue-on-error: true
         with:
           workflow: build.yml
           pr: ${{ github.event.pull_request.number }}
@@ -30,36 +34,36 @@ jobs:
           path: artifacts
           merge_multiple: true
           if_no_artifact_found: fail
-      - name: Release metadata
-        id: meta
+      - name: Check artifact set
+        id: check
+        shell: bash
         run: |
-          tag="v$(date -u +%Y.%m.%d).${{ github.run_number }}"
-          {
-            echo "tag=$tag"
-            echo "name=Run·Diff $tag"
-          } >> "$GITHUB_OUTPUT"
-      - name: Release notes
-        id: notes
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          complete=false
+          if [ "${{ steps.download.outcome }}" = "success" ] &&
+             find artifacts -type f -name '*.dmg' -print -quit | grep -q . &&
+             find artifacts -type f -name '*.AppImage' -print -quit | grep -q . &&
+             find artifacts -type f -name '*.msi' -print -quit | grep -q . &&
+             find artifacts -type f -name '*setup.exe' -print -quit | grep -q .; then
+            complete=true
+          fi
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+      - name: Normalize promoted assets
+        if: steps.check.outputs.complete == 'true'
+        shell: bash
         run: |
-          {
-            echo 'body<<EOF_NOTES'
-            printf '%s\n\n%s\n' "$PR_TITLE" "$PR_URL"
-            echo 'EOF_NOTES'
-          } >> "$GITHUB_OUTPUT"
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.name }}
-          body: ${{ steps.notes.outputs.body }}
-          files: artifacts/**/*
-          fail_on_unmatched_files: true
+          mkdir -p out
+          cp "$(find artifacts -type f -name '*.dmg' | head -n 1)" out/RunDiff-macOS-arm64.dmg
+          cp "$(find artifacts -type f -name '*.AppImage' | head -n 1)" out/RunDiff-Linux-x86_64.AppImage
+          cp "$(find artifacts -type f -name '*.msi' | head -n 1)" out/RunDiff-Windows-x86_64.msi
+          cp "$(find artifacts -type f -name '*setup.exe' | head -n 1)" out/RunDiff-Windows-x86_64-setup.exe
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.complete == 'true'
+        with: { name: release-assets, path: out/*, if-no-files-found: error }
 
   build-macos-arm:
+    needs: prepare-pr-artifacts
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-pr-artifacts.outputs.complete != 'true')
     runs-on: macos-14
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -89,8 +93,9 @@ jobs:
         with: { name: macos-arm64, path: out/*.dmg, if-no-files-found: error }
 
   build-linux:
+    needs: prepare-pr-artifacts
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-pr-artifacts.outputs.complete != 'true')
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -139,8 +144,9 @@ jobs:
         with: { name: linux-x86_64, path: out/*.AppImage, if-no-files-found: error }
 
   build-windows:
+    needs: prepare-pr-artifacts
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-pr-artifacts.outputs.complete != 'true')
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -183,19 +189,27 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          cp webapp/desktop-tauri/src-tauri/target/release/bundle/msi/*.msi out/ 2>/dev/null || true
-          cp webapp/desktop-tauri/src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
+          cp webapp/desktop-tauri/src-tauri/target/release/bundle/msi/*.msi out/RunDiff-Windows-x86_64.msi
+          cp webapp/desktop-tauri/src-tauri/target/release/bundle/nsis/*-setup.exe out/RunDiff-Windows-x86_64-setup.exe
           ls -la out
       - uses: actions/upload-artifact@v4
         with: { name: windows-x86_64, path: out/*, if-no-files-found: error }
 
-  release-manual:
+  release:
+    needs: [prepare-pr-artifacts, build-macos-arm, build-linux, build-windows]
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true) && !cancelled()
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    needs: [build-macos-arm, build-linux, build-windows]
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts, merge-multiple: true }
+      - name: Verify release assets
+        shell: bash
+        run: |
+          find artifacts -type f -maxdepth 2 -print
+          test -n "$(find artifacts -type f -name '*.dmg' -print -quit)"
+          test -n "$(find artifacts -type f -name '*.AppImage' -print -quit)"
+          test -n "$(find artifacts -type f -name '*.msi' -print -quit)"
+          test -n "$(find artifacts -type f -name '*setup.exe' -print -quit)"
       - name: Release metadata
         id: meta
         run: |
@@ -206,10 +220,17 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Release notes
         id: notes
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           {
             echo 'body<<EOF_NOTES'
-            echo "Manual Run·Diff desktop release."
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              printf '%s\n\n%s\n' "$PR_TITLE" "$PR_URL"
+            else
+              echo "Manual Run·Diff desktop release."
+            fi
             echo 'EOF_NOTES'
           } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
