@@ -1,7 +1,8 @@
 name: Build & Release
 
 # Cuts a GitHub Release on each merged PR (release name = PR title, notes = PR body),
-# and on manual dispatch. Builds the desktop app for macOS arm64/x86_64 and Linux x86_64.
+# and on manual dispatch. Builds the desktop app for macOS arm64/x86_64 (Swift WKWebView shell),
+# Windows x86_64 (Tauri, .msi + .exe) and Linux x86_64 (Tauri AppImage).
 on:
   pull_request:
     types: [closed]
@@ -74,6 +75,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: macos-x86_64, path: out/*.dmg, if-no-files-found: error }
 
+  # Lean Tauri shell (WebKitGTK) — replaces the old ~279 MB Electron AppImage path.
   build-linux:
     needs: guard
     runs-on: ubuntu-latest
@@ -81,8 +83,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - name: Install WebKitGTK + bundling deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev patchelf
       - name: Build frontend
         working-directory: webapp/frontend
         run: bun install && bun run build
@@ -92,16 +100,65 @@ jobs:
           uv sync
           uv run --with pyinstaller pyinstaller rundiff_backend.spec \
             --noconfirm --distpath dist_backend --workpath build_backend
-      - name: Build Linux app
-        working-directory: webapp/desktop
-        run: npm install && npm run dist
+      - name: Stage Tauri resources
+        working-directory: webapp/desktop-tauri
+        run: ./prep-resources.sh
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Build Tauri bundle
+        working-directory: webapp/desktop-tauri/src-tauri
+        run: cargo tauri build --bundles appimage
       - name: Collect AppImage
-        run: mkdir -p out && cp webapp/desktop/release/*.AppImage out/RunDiff-Linux-x86_64.AppImage
+        run: |
+          mkdir -p out
+          cp webapp/desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage \
+            out/RunDiff-Linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with: { name: linux-x86_64, path: out/*.AppImage, if-no-files-found: error }
 
+  # Tauri shell on Windows (WebView2, preinstalled on windows-latest) -> .msi + NSIS .exe.
+  build-windows:
+    needs: guard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - name: Build frontend
+        working-directory: webapp/frontend
+        shell: bash
+        run: bun install && bun run build
+      - name: Build backend sidecar
+        working-directory: webapp/backend
+        shell: bash
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+      - name: Stage Tauri resources
+        working-directory: webapp/desktop-tauri
+        shell: bash
+        run: ./prep-resources.sh
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Build Tauri bundle
+        working-directory: webapp/desktop-tauri/src-tauri
+        run: cargo tauri build
+      - name: Collect Windows installers
+        shell: bash
+        run: |
+          mkdir -p out
+          cp webapp/desktop-tauri/src-tauri/target/release/bundle/msi/*.msi out/ 2>/dev/null || true
+          cp webapp/desktop-tauri/src-tauri/target/release/bundle/nsis/*-setup.exe out/ 2>/dev/null || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: windows-x86_64, path: out/*, if-no-files-found: error }
+
   release:
-    needs: [build-macos-arm, build-linux]   # Intel is best-effort and intentionally not required
+    needs: [build-macos-arm, build-linux, build-windows] # Intel is best-effort and intentionally not required
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -125,7 +182,7 @@ jobs:
             if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$PR_BODY" ]; then
               printf '%s\n' "$PR_BODY"
             else
-              echo "Run·Diff desktop app (macOS arm64 / x86_64, Linux x86_64)."
+              echo "Run·Diff desktop app (macOS arm64 / x86_64, Windows x86_64, Linux x86_64)."
             fi
             echo 'EOF_NOTES'
           } >> "$GITHUB_OUTPUT"

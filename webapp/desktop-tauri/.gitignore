@@ -1,0 +1,9 @@
+# Rust / Tauri build outputs
+src-tauri/target/
+src-tauri/gen/
+
+# Staged resources (copied in by prep-resources.sh from the backend/frontend builds)
+src-tauri/resources/
+
+# Project-local Rust toolchain (set CARGO_HOME / RUSTUP_HOME here; see README)
+.toolchain/

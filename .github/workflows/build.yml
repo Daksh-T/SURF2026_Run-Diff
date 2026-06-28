@@ -1,0 +1,116 @@
+name: PR Build
+
+# Validation-only: builds every desktop target (including Windows) on each PR so the cross-platform
+# bundles — especially the Tauri Windows build — prove themselves green before merge. Cuts NO
+# release (that's release.yml, on merge). Artifacts are uploaded for manual download/inspection.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: pr-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # macOS keeps the lean Swift WKWebView shell.
+  build-macos-arm:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+      - name: Build frontend
+        working-directory: webapp/frontend
+        run: bun install && bun run build
+      - name: Build backend sidecar
+        working-directory: webapp/backend
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+      - name: Build macOS app
+        working-directory: webapp/desktop-macos
+        env: { ARCH: arm64, VERSION: "${{ github.run_number }}" }
+        run: |
+          chmod +x build.sh && ./build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: pr-macos-arm64, path: webapp/desktop-macos/release/*.app/Contents/Info.plist, if-no-files-found: error }
+
+  # Linux: lean Tauri shell (WebKitGTK).
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - name: Install WebKitGTK + bundling deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev patchelf
+      - name: Build frontend
+        working-directory: webapp/frontend
+        run: bun install && bun run build
+      - name: Build backend sidecar
+        working-directory: webapp/backend
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+      - name: Stage Tauri resources
+        working-directory: webapp/desktop-tauri
+        run: ./prep-resources.sh
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Build Tauri bundle
+        working-directory: webapp/desktop-tauri/src-tauri
+        run: cargo tauri build --bundles appimage
+      - uses: actions/upload-artifact@v4
+        with: { name: pr-linux-x86_64, path: webapp/desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage, if-no-files-found: error }
+
+  # Windows: Tauri shell (WebView2). This is the build the PR is meant to prove green.
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: webapp/desktop-tauri/src-tauri }
+      - name: Build frontend
+        working-directory: webapp/frontend
+        shell: bash
+        run: bun install && bun run build
+      - name: Build backend sidecar
+        working-directory: webapp/backend
+        shell: bash
+        run: |
+          uv sync
+          uv run --with pyinstaller pyinstaller rundiff_backend.spec \
+            --noconfirm --distpath dist_backend --workpath build_backend
+      - name: Stage Tauri resources
+        working-directory: webapp/desktop-tauri
+        shell: bash
+        run: ./prep-resources.sh
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Build Tauri bundle
+        working-directory: webapp/desktop-tauri/src-tauri
+        run: cargo tauri build
+      - name: List installers
+        shell: bash
+        run: ls -la webapp/desktop-tauri/src-tauri/target/release/bundle/msi webapp/desktop-tauri/src-tauri/target/release/bundle/nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-windows-x86_64
+          path: |
+            webapp/desktop-tauri/src-tauri/target/release/bundle/msi/*.msi
+            webapp/desktop-tauri/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
