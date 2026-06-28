@@ -51,8 +51,9 @@ eval/src/         LLM provider layer (Groq + Ollama)    (imported by the backend
 - **[Bun](https://bun.sh/)** — installs and builds the frontend.
 - **[Ollama](https://ollama.com/)** *(student hints)* — serves the local hint model
   `qwen2.5-coder:7b`. The app can pull it on first run, or `ollama pull qwen2.5-coder:7b`.
-- **Groq API key** *(instructor authoring only)* — put it in `webapp/backend/.env` as
-  `groq_api_key=...`. Not needed to run, grade, or take problems.
+- **Groq API key** *(instructor authoring only)* — put it in the repo-root `.env` as
+  `groq_api_key=...` (or export it as an environment variable). Not needed to run, grade, or
+  take problems. See `CONFIGURATION.md` for all configuration.
 
 macOS desktop builds also need the **Xcode Command Line Tools** (`xcode-select --install`)
 for `swiftc`. Linux desktop builds need **Node.js** (electron-builder runs under Node).
@@ -130,7 +131,7 @@ The app ships with no built-in problems — instructors create their own:
 4. Publish the set; students select it from the practice view.
 
 Authored content lives under `webapp/data/` and uses the Groq-backed authoring flow
-(`groq_api_key` in `webapp/backend/.env`).
+(`groq_api_key` in the repo-root `.env`, or exported as an environment variable).
 
 ## License
 
