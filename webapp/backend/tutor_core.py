@@ -216,21 +216,28 @@ def student_result(schema: str, generator_src: str, baked: dict,
 # --------------------------------------------------------------------------- #
 def diff_payload(gr: grader.GradeResult, cap: int = 5) -> dict | None:
     """The diff the student UI renders. Pulled from the first failing seed; carries only
-    result-set facts (row/col counts, sample missing/extra rows, ordering/SQL-error flags)."""
+    result-set facts (row/col counts, sample missing/extra rows, ordering/SQL-error flags),
+    plus the redesign's column headers + header annotations and the error-class family."""
     if gr.correct or not gr.first_fail or not gr.first_fail.diff:
         return None
     d = gr.first_fail.diff
+    family = grader.classify_family(d)
     return {
         "seed": d.seed,
         "ordered": d.ordered,
         "sql_error": d.sql_error,
         "ordering_only": d.ordering_only,
+        "family": family,
         "gold_ncols": d.gold_ncols, "student_ncols": d.student_ncols,
         "gold_nrows": d.gold_nrows, "student_nrows": d.student_nrows,
+        # column headers so the renderer can align by name and color only common columns (§4.2)
+        "gold_cols": list(d.gold_cols), "student_cols": list(d.student_cols),
+        "header_notes": d.header_annotations(),
+        "required_columns_missing": list(d.required_columns_missing),
         "missing": [list(r) for r in d.missing[:cap]],
         "extra": [list(r) for r in d.extra[:cap]],
         "missing_total": len(d.missing), "extra_total": len(d.extra),
-        "text": d.to_text(cap=cap),
+        "text": d.to_text(cap=cap, family=family),
     }
 
 
@@ -277,6 +284,41 @@ def hint_for(p: dict, redacted: "RedactedProblem", gr, level: int,
         import state_core as sc
         return sc.generate_hint_state(redacted, gr, level, sql, model)
     return make_hint(redacted, gr, level, sql, model)
+
+
+# --- family-adaptive ladder plumbing (redesign §3) — kind-aware ------------- #
+def family_for(p: dict, gr) -> str | None:
+    """Error-class family of the first failing grade (None when correct). Drives the ladder
+    ordering and lets the UI label rungs ahead of time."""
+    if gr.correct:
+        return None
+    if p.get("kind", "select") == "state":
+        import state_core as sc
+        return sc.family_for_state(gr)
+    return harness.family_for(gr)
+
+
+def rung_plan(p: dict, gr) -> list[str] | None:
+    """The primitive sitting at each of L1..L3 for this grade's family (None when correct).
+    The UI renders rung labels from this and knows which rungs are the deterministic diff."""
+    if gr.correct:
+        return None
+    if p.get("kind", "select") == "state":
+        import state_core as sc
+        return sc.rung_plan_state(gr)
+    return [harness.primitive_at(gr, lv) for lv in (1, 2, 3)]
+
+
+def primitive_at(p: dict, gr, level: int) -> str:
+    """Primitive for a single rung. The hint endpoint uses this to decide whether a rung is the
+    deterministic diff/db_error (no model call, client renders) or a model rung."""
+    plan = rung_plan(p, gr) or []
+    idx = max(1, min(level, len(plan) or 1)) - 1
+    return plan[idx] if plan else "conceptual"
+
+
+# the deterministic (no-model, client-rendered) primitives, shared by app.py's hint endpoint
+DETERMINISTIC_PRIMITIVES = ("diff", "db_error")
 
 
 def hint_leaks_for(p: dict, hint_text: str) -> bool:

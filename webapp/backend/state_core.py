@@ -418,6 +418,7 @@ def diff_payload_state(gr: StateGradeResult, cap: int = 5) -> dict | None:
         }
     return {
         "kind": "state",
+        "family": family_for_state(gr),
         "seed": d.seed,
         "sql_error": d.sql_error,
         "tables_missing": list(d.tables_missing),
@@ -463,16 +464,74 @@ def student_result_state(schema: str, generator_src: str, baked: dict,
 
 # --------------------------------------------------------------------------- #
 # 8. HINT  (runtime, NO gold SQL — model sees only the redacted view + state diff)
+#
+# State family ladder (redesign 2026-06-28). The SELECT membership/structure split does not map
+# cleanly onto state diffs, because the honesty rule forbids showing gold-only rows (counts
+# only). So a "diff-first" rung is strong for SCHEMA errors (table/column names are safe to
+# show) but partially blinded for ROW errors (we can only show counts + the student's OWN extra
+# rows). The state families and their orderings:
+#
+#   family       trigger                          L1         L2          L3
+#   -----------  -------------------------------  ---------  ----------  ----------
+#   error        sql_error                        db_error   conceptual  directive
+#   no_effect    statement changed nothing        diff*      socratic    directive   (* "no change")
+#   schema       tables/columns differ            diff       socratic    conceptual
+#   rows         only row contents differ         diff       socratic    directive
+#
+# Schema diffs are concrete and leak-free → diff-first mirrors SELECT membership. Row diffs are
+# the one place state is weaker than SELECT (the diff can't reveal the missing gold rows) so we
+# lead with the partial diff and END on a directive. no_effect's diff is just "you changed
+# nothing"; the diff rung renders that, then socratic → directive. As in select-mode, the diff /
+# db_error rungs are DETERMINISTIC (client renders them from the diff payload, no model call).
 # --------------------------------------------------------------------------- #
-# State-flavored L1/L2 ladder, parallel to harness._LEVEL_RULES (only L1/L2 are model-drawn;
-# L3 is the deterministic diff evidence rendered client-side, never a model-written statement).
-_STATE_LEVEL_RULES = {
-    1: "Give a LEVEL 1 hint: a one-sentence conceptual nudge about what KIND of thing is wrong "
-       "with how their statement changed (or failed to change) the data. Do NOT name a SQL "
-       "clause or keyword. Do NOT write any SQL.",
-    2: "Give a LEVEL 2 hint: name the specific SQL statement or clause the student should revisit "
-       "(e.g. the WHERE on an UPDATE/DELETE, the column list of a CREATE, which table a DROP "
-       "targets), and why, in 1-2 sentences. Do NOT write a full statement or the answer.",
+_STATE_FAMILY_RUNGS = {
+    "error":     ["db_error", "conceptual", "directive"],
+    "no_effect": ["diff", "socratic", "directive"],
+    "schema":    ["diff", "socratic", "conceptual"],
+    "rows":      ["diff", "socratic", "directive"],
+}
+
+
+def family_for_state(gr: StateGradeResult) -> str | None:
+    """Error-class family of a wrong state grade (None when correct)."""
+    if gr.correct or not gr.first_fail or not gr.first_fail.diff:
+        return None
+    d = gr.first_fail.diff
+    if d.sql_error:
+        return "error"
+    if d.no_effect:
+        return "no_effect"
+    if d.tables_missing or d.tables_extra or d.column_diffs:
+        return "schema"
+    return "rows"
+
+
+def rung_plan_state(gr: StateGradeResult) -> list[str] | None:
+    if gr.correct:
+        return None
+    return list(_STATE_FAMILY_RUNGS.get(family_for_state(gr) or "rows",
+                                        _STATE_FAMILY_RUNGS["rows"]))
+
+
+def primitive_at_state(gr: StateGradeResult, level: int) -> str:
+    plan = rung_plan_state(gr) or _STATE_FAMILY_RUNGS["rows"]
+    return plan[max(1, min(level, len(plan))) - 1]
+
+
+_STATE_PRIMITIVE_RULES = {
+    "socratic":
+        "Give a SOCRATIC hint: ask ONE pointed question that leads the student to LOCATE what "
+        "their statement did wrong to the data (e.g. 'which rows did your WHERE actually match?'). "
+        "Ask a question only — do NOT state the fix, do NOT name a SQL clause, do NOT write SQL.",
+    "conceptual":
+        "Give a CONCEPTUAL hint: one sentence naming the KIND of thing that's wrong with how "
+        "their statement changed (or failed to change) the data. Do NOT name a SQL clause or "
+        "keyword, and do NOT write any SQL.",
+    "directive":
+        "Give a DIRECTIVE hint: in prose, name the specific statement or clause that is wrong "
+        "(e.g. the WHERE on an UPDATE/DELETE, the column list of a CREATE, the table a DROP "
+        "targets) AND the nature of the fix. Be concrete about WHAT to change and WHY. Do NOT "
+        "write any runnable SQL and do NOT hand over a complete or near-complete statement.",
 }
 
 _STATE_SYSTEM = (
@@ -484,71 +543,83 @@ _STATE_SYSTEM = (
 )
 
 
-def _build_state_hint_prompt(ctx: dict, student_sql: str, diff_text: str, level: int) -> str:
+def _build_state_hint_prompt(ctx: dict, student_sql: str, diff_text: str, primitive: str) -> str:
     parts = [
         _STATE_SYSTEM,
         "\n## Problem\n" + ctx["prompt"].strip(),
         "\n## Schema\n" + (ctx["schema"].strip() or "(no pre-existing tables)"),
         "\n## The student's statement\n" + student_sql.strip(),
         "\n## How the resulting database state is wrong (deterministic diff)\n" + diff_text.strip(),
-        "\n## Your task\n" + _STATE_LEVEL_RULES[level],
+        "\n## Your task\n" + _STATE_PRIMITIVE_RULES[primitive],
     ]
     return "\n".join(parts)
 
 
-def _offline_hint_state(category: str | None, level: int) -> str:
-    """Deterministic, LLM-free state hint keyed off `error_category_state`. Never emits SQL that
-    could be a working answer; provably cannot leak."""
-    if category == "didn't run":
-        if level == 1:
-            return ("Your statement doesn't run yet — read the database error and check your "
-                    "table and column names.")
-        return "There's a SQL error to fix first: look at the statement's syntax and the names it uses."
-    if category == "table missing":
-        if level == 1:
-            return "The database is missing a table the question asks you to produce."
-        return "Revisit your CREATE TABLE — a table the prompt requires isn't there afterward."
-    if category == "unexpected table — should it be gone?":
-        if level == 1:
-            return "Your statement left something in the database that the question wanted removed."
-        return "Revisit which table your DROP targets — an extra table is still present afterward."
-    if category == "wrong columns":
-        if level == 1:
-            return "The table is there, but its shape isn't quite what the question describes."
-        return ("Revisit your column list in the CREATE TABLE — a column's name, type, or a "
-                "constraint (like NOT NULL or PRIMARY KEY) doesn't match what's required.")
-    if category == "no effect — your statement changed nothing":
-        if level == 1:
-            return "Your statement ran but changed nothing — make sure it actually touches the data."
-        return ("Revisit which rows your statement matches — an UPDATE/DELETE with a WHERE that "
-                "matches nothing (or a missing target) leaves the data untouched.")
-    # wrong rows (default)
-    if level == 1:
-        return ("The right tables are there, but the rows aren't: you're changing too many, too "
-                "few, or the wrong ones. Re-read which rows the question targets.")
-    return ("Look at the WHERE (or values) on your statement — it's selecting or writing the "
-            "wrong rows. One of those conditions isn't doing what the prompt requires.")
+def render_state_diff_rung(gr: StateGradeResult) -> str:
+    """The deterministic `diff`/`db_error` rung text — the already-redacted state diff (which
+    also covers the no-effect and sql-error messaging). No model, cannot leak."""
+    d = gr.first_fail.diff if gr.first_fail else None
+    return d.to_text() if d else ""
+
+
+def _offline_primitive_state(primitive: str, family: str | None) -> str:
+    """Deterministic, LLM-free text for a state model primitive (socratic/conceptual/directive),
+    keyed by family. Used as offline mode and as the leak-guard fallback; cannot leak."""
+    if primitive == "socratic":
+        if family == "error":
+            return "Your statement didn't run — what do the table and column names in it refer to?"
+        if family == "schema":
+            return ("Look at the tables and columns the question describes — which one is "
+                    "missing, extra, or shaped differently from what you produced?")
+        if family == "no_effect":
+            return "Your statement ran but changed nothing — which rows did you expect it to touch?"
+        return ("Look at the rows that ended up wrong — which ones did your statement change (or "
+                "leave alone) that it shouldn't have, and what do they have in common?")
+    if primitive == "conceptual":
+        if family == "error":
+            return ("Your statement has a syntax or naming problem — it can't run yet, so fix that "
+                    "before worrying about which rows it affects.")
+        if family == "schema":
+            return "The problem is the shape of the database — a table or column isn't as required."
+        if family == "no_effect":
+            return "Your statement didn't actually change the data the way the question needs."
+        return ("You're changing too many, too few, or the wrong rows — the issue is which rows "
+                "you target, not the table's shape.")
+    # directive
+    if family == "error":
+        return ("Read the database error and fix it first: check that every table and column name "
+                "exists and is spelled right, and that your value list matches the columns.")
+    if family == "schema":
+        return ("Revisit your CREATE/DROP/ALTER — a table or a column's name, type, or constraint "
+                "(NOT NULL, PRIMARY KEY) doesn't match what the prompt requires. Fix that piece.")
+    if family == "no_effect":
+        return ("Revisit the WHERE (or the target) of your UPDATE/DELETE — it currently matches "
+                "nothing, so the data is untouched. Make it select the rows the prompt describes.")
+    return ("Revisit the WHERE clause (or the values) on your statement — it's writing or "
+            "removing the wrong rows. Change that condition to match the rows the prompt targets.")
 
 
 def generate_hint_state(problem: tc.RedactedProblem, gr: StateGradeResult, level: int,
                         student_sql: str, model: str | None) -> str:
-    """One laddered state hint (L1/L2). Mirrors `harness.generate_hint`'s architecture: offline
-    template when `model is None`; otherwise the pluggable model via `populator/model.py` with a
-    single retry and an offline fallback on empty/failed output. The model never sees gold state
-    (the diff text is already redacted)."""
-    category = error_category_state(gr)
+    """One laddered state hint. Mirrors `harness.generate_hint`: deterministic diff/db_error
+    rungs never call a model; model rungs use the pluggable model via `populator/model.py` (one
+    retry, offline fallback). The model never sees gold state (the diff text is redacted)."""
+    primitive = primitive_at_state(gr, level)
+    family = family_for_state(gr)
+    if primitive in ("diff", "db_error"):
+        return render_state_diff_rung(gr)
     if model is None:
-        return _offline_hint_state(category, level)
+        return _offline_primitive_state(primitive, family)
     import model as model_mod   # populator/model.py — the same client harness.generate_hint uses
     diff_text = gr.first_fail.diff.to_text() if (gr.first_fail and gr.first_fail.diff) else ""
     ctx = {"prompt": problem.prompt, "schema": problem.schema}
-    prompt = _build_state_hint_prompt(ctx, student_sql, diff_text, level)
+    prompt = _build_state_hint_prompt(ctx, student_sql, diff_text, primitive)
     try:
         out = model_mod.call(model, prompt, max_retries=1)
         text = (out.get("text") or "").strip()
     except Exception:   # unreachable model -> offline within seconds
         text = ""
-    return text or _offline_hint_state(category, level)
+    return text or _offline_primitive_state(primitive, family)
 
 
 # --------------------------------------------------------------------------- #

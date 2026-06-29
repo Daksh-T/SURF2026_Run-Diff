@@ -25,7 +25,10 @@ import providers  # noqa: E402  (from eval/src)
 
 # friendly name -> (provider, model_id)
 REGISTRY = {
-    "groq":   ("groq", "llama-3.3-70b-versatile"),
+    # default cloud authoring model. Switched 2026-06-29 off llama-3.3-70b-versatile (being
+    # deprecated by Groq) to Qwen3.6-27B. The old Llama is kept under `groq-llama` for A/B.
+    "groq":   ("groq", "qwen/qwen3.6-27b"),
+    "groq-llama": ("groq", "llama-3.3-70b-versatile"),  # deprecated; kept for comparison only
     "qwen1.5b": ("ollama", "qwen2.5-coder:1.5b"),  # weak model — the Phase-6 simulated student
     "qwen7b":  ("ollama", "qwen2.5-coder:7b"),
     "qwen14b": ("ollama", "qwen2.5-coder:14b"),
@@ -68,8 +71,10 @@ def call(model_name: str, prompt: str, max_retries: int = 5) -> dict:
 
 
 def cost_usd(model_name: str, pt: int, ct: int) -> float:
-    # only cloud models carry a price; locals are 0
-    table = {"groq": (0.59, 0.79), "gptoss": (0.15, 0.75)}
+    # only cloud models carry a price; locals are 0. ($/M input, $/M output)
+    # NOTE: the "groq" price is for Qwen3.6-27B and is APPROXIMATE — verify against Groq's
+    # current pricing page; "groq-llama" keeps the old llama-3.3-70b rate for comparison.
+    table = {"groq": (0.29, 0.59), "groq-llama": (0.59, 0.79), "gptoss": (0.15, 0.75)}
     if model_name not in table:
         return 0.0
     pin, pout = table[model_name]

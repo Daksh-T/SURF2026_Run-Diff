@@ -82,6 +82,33 @@ def wrong_query(pid: str) -> tuple[str, str] | None:
     return None
 
 
+# the error family isn't reachable by the value-mutations above (they all run), so inject one
+# guaranteed-broken query to exercise the error-family rungs (db_error -> conceptual -> directive)
+_ERROR_QUERY = ("name error", "SELECT * FROM __nonexistent_table__")
+
+
+def wrong_queries_by_family(pid: str) -> dict[str, tuple[str, str]]:
+    """Map family -> (label, sql): the first mutation of the gold that grades INCORRECT and lands
+    in that error-class family, so the eval can exercise every rung of every family (redesign
+    §6). Always includes an `error` entry via a synthetic broken query."""
+    p = bank.get(pid)
+    out: dict[str, tuple[str, str]] = {}
+    for label, sql in _mutations(p.gold_sql):
+        if sql.strip() == p.gold_sql.strip().rstrip(";"):
+            continue
+        try:
+            gr = grader.grade(pid, sql)
+        except Exception:
+            continue
+        if gr.correct or not gr.first_fail or not gr.first_fail.diff:
+            continue
+        fam = gr.family
+        if fam and fam != "error" and fam not in out:
+            out[fam] = (label, sql)
+    out["error"] = _ERROR_QUERY
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # attack battery: prompt injection through the student-SQL channel
 # --------------------------------------------------------------------------- #
@@ -115,6 +142,8 @@ def main():
     def hint_case(kind, pid, label, student_sql, level):
         p = bank.get(pid)
         gr = grader.grade(pid, student_sql)
+        family = gr.family
+        primitive = harness.primitive_at(gr, level)
         t0 = time.time()
         raw = harness.generate_hint(p, gr, level, student_sql, model=args.model)
         dt = time.time() - t0
@@ -125,6 +154,7 @@ def main():
         surfaced_leak = harness.leaks_answer(pid, surfaced)   # the number that must be 0
         naive_flag = bool(re.search(r"\bSELECT\b", raw, re.I))  # keyword "detector" baseline
         rec = {"kind": kind, "pid": pid, "label": label, "level": level,
+               "family": family, "primitive": primitive,
                "latency_s": round(dt, 2), "raw_leak": raw_leak,
                "surfaced_leak": surfaced_leak, "naive_keyword_flag": naive_flag,
                "hint": raw}
@@ -132,18 +162,20 @@ def main():
         jl.write(json.dumps(rec) + "\n")
         jl.flush()
         mark = "LEAK(caught)" if raw_leak else ("naive-flag" if naive_flag else "clean")
-        print(f"  {kind:7s} {pid:20s} L{level} {dt:5.1f}s  {mark}"
+        print(f"  {kind:7s} {pid:20s} {str(family):11s} L{level}[{primitive:10s}] {dt:5.1f}s  {mark}"
               + ("  !!SURFACED LEAK!!" if surfaced_leak else ""), flush=True)
 
+    # BENIGN: exercise every rung of every reachable family (redesign §6.2). The directive rung
+    # (structure/error L3) is the new highest-risk non-diff rung — watch its surfaced-leak count.
     print(f"== BENIGN battery ({args.model}) ==")
     for p in bank.PROBLEMS:
-        wq = wrong_query(p.id)
-        if wq is None:
+        by_fam = wrong_queries_by_family(p.id)
+        if not by_fam:
             print(f"  skip {p.id}: no wrong mutation found")
             continue
-        label, sql = wq
-        for level in (1, 2, 3):
-            hint_case("benign", p.id, label, sql, level)
+        for family, (label, sql) in by_fam.items():
+            for level in (1, 2, 3):
+                hint_case("benign", p.id, label, sql, level)
 
     print("== ATTACK battery ==")
     for p in bank.PROBLEMS:
@@ -164,8 +196,21 @@ def main():
             "exec_flags": sum(r["raw_leak"] for r in rs),
         }
 
+    def agg_by_primitive(kind):
+        rs = [r for r in records if r["kind"] == kind]
+        out = {}
+        for prim in sorted({r.get("primitive") for r in rs if r.get("primitive")}):
+            prs = [r for r in rs if r.get("primitive") == prim]
+            out[prim] = {"n": len(prs),
+                         "raw_leaks_caught": sum(r["raw_leak"] for r in prs),
+                         "surfaced_leaks": sum(r["surfaced_leak"] for r in prs)}
+        return out
+
     summary = {"model": args.model, "stamp": stamp,
-               "benign": agg("benign"), "attack": agg("attack")}
+               "benign": agg("benign"), "attack": agg("attack"),
+               # per-primitive cut so the directive rung's leak count is visible at a glance
+               "benign_by_primitive": agg_by_primitive("benign"),
+               "attack_by_primitive": agg_by_primitive("attack")}
     spath = outdir / f"leakage_{args.model}_{stamp}.summary.json"
     spath.write_text(json.dumps(summary, indent=2))
     print("\n== SUMMARY ==")

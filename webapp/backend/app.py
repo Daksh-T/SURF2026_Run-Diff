@@ -325,6 +325,10 @@ def student_grade(req: GradeReq):
         "n_passed": n_passed,
         "diff": tc.diff_payload_for(p, gr),
         "category": category,
+        # error-class family + the per-rung primitive plan (redesign §3) so the UI can label
+        # rungs and know which rung is the deterministic diff. None when correct.
+        "family": tc.family_for(p, gr),
+        "rung_plan": tc.rung_plan(p, gr),
         # the student's own output on seed #1 — never the gold rows.
         "student_result": tc.student_result_for(p, req.sql),
     }
@@ -341,11 +345,12 @@ class HintReq(BaseModel):
 
 @app.post("/api/student/hint")
 def student_hint(req: HintReq):
-    # Only the language rungs (L1 conceptual, L2 name-the-clause) are model-generated. L3 is the
-    # deterministic diff evidence, rendered client-side from the grade response — never a
-    # model-drawn query skeleton (which leaks the answer's shape by construction). So the model
-    # is never asked for L3 here. L3 still posts here (with no model call) purely so the request
-    # is logged to the attempt stream and surfaces in Insights like L1/L2.
+    # The ladder is now error-class-adaptive (redesign §3): which primitive sits at L1/L2/L3
+    # depends on the grade's family. The DETERMINISTIC rungs (`diff`, `db_error`) call no model
+    # and carry no text — the client renders them from the diff evidence it already holds — so
+    # they cannot leak. The MODEL rungs (socratic / conceptual / directive) carry no runnable
+    # SQL and pass through the execution leak guard. A deterministic rung still posts here (no
+    # model call) so the request is logged to the attempt stream and surfaces in Insights.
     if req.level not in (1, 2, 3):
         raise HTTPException(400, "level must be 1, 2 or 3")
     _assert_participant(req.class_id, req.student)
@@ -358,23 +363,30 @@ def student_hint(req: HintReq):
     p = _bundle_problem(req.set_id, req.problem_id)
     gr = tc.grade_problem(p, req.sql)
     if gr.correct:
-        return {"correct": True, "hint": None, "level": req.level, "leaked": False}
+        return {"correct": True, "hint": None, "level": req.level, "leaked": False,
+                "primitive": None}
 
-    if req.level == 3:
-        # deterministic rung: log the request, return no model text (the client renders the
-        # diff evidence it already holds).
+    primitive = tc.primitive_at(p, gr, req.level)
+
+    def _log(level):
         if req.class_id and req.student:
             try:
                 rec = classes.append_attempt(req.class_id, {
                     "student": req.student, "problem_id": p["id"], "set_id": req.set_id,
                     "kind": "hint", "correct": None, "category": None,
                     "n_passed": sum(1 for s in gr.per_seed if s.ok),
-                    "n_seeds": gr.n_seeds, "hint_level": 3, "sql": req.sql,
+                    "n_seeds": gr.n_seeds, "hint_level": level, "sql": req.sql,
                 })
                 _forward_attempt(req.class_id, rec)
             except Exception:  # noqa: BLE001 — logging must never break hints
                 pass
-        return {"correct": False, "hint": None, "level": 3, "leaked": False}
+
+    if primitive in tc.DETERMINISTIC_PRIMITIVES:
+        # deterministic rung: log the request, return no model text (the client renders the
+        # diff evidence it already holds).
+        _log(req.level)
+        return {"correct": False, "hint": None, "level": req.level, "leaked": False,
+                "primitive": primitive}
 
     hint = tc.hint_for(p, _redacted(p), gr, req.level, req.sql, model=HINT_MODEL)
     # execution leak guard, off baked gold results (no gold SQL). If a hint smuggled a working
@@ -382,18 +394,9 @@ def student_hint(req: HintReq):
     leaked = tc.hint_leaks_for(p, hint)
     if leaked:
         hint = tc.hint_for(p, _redacted(p), gr, req.level, req.sql, model=None)
-    if req.class_id and req.student:
-        try:
-            rec = classes.append_attempt(req.class_id, {
-                "student": req.student, "problem_id": p["id"], "set_id": req.set_id,
-                "kind": "hint", "correct": None, "category": None,
-                "n_passed": sum(1 for s in gr.per_seed if s.ok),
-                "n_seeds": gr.n_seeds, "hint_level": req.level, "sql": req.sql,
-            })
-            _forward_attempt(req.class_id, rec)
-        except Exception:  # noqa: BLE001 — logging must never break hints
-            pass
-    return {"correct": False, "hint": hint, "level": req.level, "leaked": leaked}
+    _log(req.level)
+    return {"correct": False, "hint": hint, "level": req.level, "leaked": leaked,
+            "primitive": primitive}
 
 
 # =========================================================================== #

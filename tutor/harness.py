@@ -14,14 +14,33 @@ answer is therefore impossible by construction; the only residual risk is the mo
 *deriving* a correct query inside a hint, which the leakage guard below catches by
 execution (full Phase 5 will expand it).
 
-Hint laddering:
-  L1 — conceptual nudge (what kind of thing is wrong; no clause named)
-  L2 — name the clause/operation to revisit
-  L3 — a skeleton with blanks (structure, never the gold query)
+Hint laddering (redesign 2026-06-28 — error-class-adaptive ordering):
+  The ladder is built from four PRIMITIVES, and which primitive sits at L1/L2/L3 depends on
+  the error-class FAMILY the deterministic grader already detects (grader.classify_family):
 
-One model call per turn: the diff is deterministic, so there is no second "grading" call.
-The harness is model-pluggable via populator/model.py; an offline templated mode lets the
-whole loop run and be tested without any LLM.
+    primitive   what it is                                              source
+    ----------  -----------------------------------------------------  ------------------
+    diff        the rendered deterministic result-set difference        grader (no model)
+    socratic    ONE question that makes the student locate the error    model
+    conceptual  one-sentence nudge naming the KIND of mistake, no SQL   model
+    directive   names the clause/op AND the fix, in prose, no SQL       model
+    db_error    the database error message (error family L1)            grader (no model)
+
+    family       L1          L2          L3
+    -----------  ----------  ----------  ----------
+    membership   diff        socratic    conceptual
+    ordering     diff*       socratic    conceptual    (* rendered as "wrong order")
+    structure    socratic    conceptual  directive     (the locked default)
+    error        db_error    conceptual  directive
+
+  Membership/ordering lead with the concrete diff then DE-escalate concreteness while
+  escalating fix-guidance (intentional non-monotonicity). Structure never shows the raw diff
+  (locked decision) and ends on the directive. `default` routes to structure.
+
+One model call per turn (deterministic rungs make none). The harness is model-pluggable via
+populator/model.py; an offline templated mode lets the whole loop run and be tested without
+any LLM. The retired L3 query-skeleton primitive is GONE: its job is now done by `diff` (for
+membership) or `directive` (for structure).
 """
 from __future__ import annotations
 
@@ -55,21 +74,51 @@ def model_context(problem) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# prompt construction for the single constrained hint call
+# the per-family ordering policy (redesign §3). Each family keeps three rungs;
+# only the content/order changes. `default` -> structure.
 # --------------------------------------------------------------------------- #
-_LEVEL_RULES = {
-    1: "Give a LEVEL 1 hint: a one-sentence conceptual nudge about what KIND of thing is "
-       "wrong. Do NOT name a SQL clause or keyword. Do NOT write any SQL.",
-    2: "Give a LEVEL 2 hint: name the specific SQL clause or operation the student should "
-       "revisit, and why, in 1-2 sentences. Do NOT write a full query or the answer.",
-    3: "Give a LEVEL 3 hint: show ONLY the structural SHAPE of the query as a skeleton — which "
-       "clauses appear and in what order — with EVERY meaningful choice left as a blank `___`. "
-       "Blank out all column names, every aggregate/function name, all literals and values, and "
-       "any sort direction (ASC/DESC). CRITICAL: the specific token the student got wrong (per "
-       "the diff) MUST be a blank — never fill in the exact piece they are missing, or you have "
-       "handed them the answer. A correct skeleton looks like `SELECT ___, ___(___) FROM ___ "
-       "GROUP BY ___ ORDER BY ___ LIMIT ___` — clause keywords only, everything else blank. "
-       "Never write the complete or near-complete query.",
+DIFF, SOCRATIC, CONCEPTUAL, DIRECTIVE, DB_ERROR = (
+    "diff", "socratic", "conceptual", "directive", "db_error")
+MODEL_PRIMITIVES = (SOCRATIC, CONCEPTUAL, DIRECTIVE)   # the rungs that call the LLM
+
+_FAMILY_RUNGS = {
+    "membership": [DIFF, SOCRATIC, CONCEPTUAL],
+    "ordering":   [DIFF, SOCRATIC, CONCEPTUAL],
+    "structure":  [SOCRATIC, CONCEPTUAL, DIRECTIVE],
+    "error":      [DB_ERROR, CONCEPTUAL, DIRECTIVE],
+}
+
+
+def family_for(gr: grader.GradeResult) -> str:
+    """The error-class family of a wrong grade (drives the ladder). Falls back to structure
+    (the locked default) when no diff is available."""
+    return gr.family or "structure"
+
+
+def primitive_at(gr: grader.GradeResult, level: int) -> str:
+    """Which of the four primitives sits at `level` (1..MAX_LEVEL) for this grade's family."""
+    rungs = _FAMILY_RUNGS.get(family_for(gr), _FAMILY_RUNGS["structure"])
+    return rungs[max(1, min(level, MAX_LEVEL)) - 1]
+
+
+# --------------------------------------------------------------------------- #
+# prompt construction for the single constrained hint call (model primitives only)
+# --------------------------------------------------------------------------- #
+_PRIMITIVE_RULES = {
+    SOCRATIC:
+        "Give a SOCRATIC hint: ask ONE pointed question that leads the student to LOCATE the "
+        "error themselves (e.g. 'which of your rows shouldn't be there, and what do they have "
+        "in common?'). Ask a question only — do NOT state the fix, do NOT name a SQL clause or "
+        "keyword, and do NOT write any SQL.",
+    CONCEPTUAL:
+        "Give a CONCEPTUAL hint: one sentence naming the KIND of mistake (e.g. a filtering "
+        "boundary, a grouping, an ordering). Do NOT name a specific SQL clause or keyword, and "
+        "do NOT write any SQL.",
+    DIRECTIVE:
+        "Give a DIRECTIVE hint: in prose, name the specific SQL clause or operation that is "
+        "wrong AND the nature of the fix (e.g. 'your JOIN is dropping unmatched rows — you want "
+        "a LEFT JOIN'). Be concrete about WHAT to change and WHY. Do NOT write any runnable SQL "
+        "and do NOT hand over a complete or near-complete query.",
 }
 
 _SYSTEM = (
@@ -81,7 +130,7 @@ _SYSTEM = (
 )
 
 
-def build_hint_prompt(ctx: dict, student_sql: str, diff_text: str, level: int) -> str:
+def build_hint_prompt(ctx: dict, student_sql: str, diff_text: str, primitive: str) -> str:
     parts = [
         _SYSTEM,
         "\n## Problem\n" + ctx["prompt"].strip(),
@@ -90,61 +139,91 @@ def build_hint_prompt(ctx: dict, student_sql: str, diff_text: str, level: int) -
         + "\n- ".join(ctx["target_clauses"]),
         "\n## The student's query\n" + student_sql.strip(),
         "\n## How the student's result is wrong (deterministic diff)\n" + diff_text.strip(),
-        "\n## Your task\n" + _LEVEL_RULES[level],
+        "\n## Your task\n" + _PRIMITIVE_RULES[primitive],
     ]
     return "\n".join(parts)
 
 
 # --------------------------------------------------------------------------- #
-# hint generation — model-backed or offline templated
+# hint generation — model-backed or offline templated, dispatched by primitive
 # --------------------------------------------------------------------------- #
-def _offline_hint(ctx: dict, gr: grader.GradeResult, level: int) -> str:
-    """Deterministic, LLM-free hint from the diff. Lets the harness run & be tested with
-    no model, and never emits the answer."""
+def _offline_primitive(primitive: str, ctx: dict, gr: grader.GradeResult) -> str:
+    """Deterministic, LLM-free text for a model primitive (socratic/conceptual/directive).
+    Used both as the offline mode and as the leak-guard fallback; never emits the answer."""
     diff = gr.first_fail.diff if gr.first_fail else None
     clauses = ctx["target_clauses"]
-    if diff and diff.sql_error:
-        if level == 1:
-            return "Your query doesn't run yet — read the database error and check your column and table names."
-        if level == 2:
-            return f"There's a SQL error to fix first: {diff.sql_error}"
-        return "Fix the error, then build up the query piece by piece: `SELECT ___ FROM ___ WHERE ___`."
-    if diff and diff.ordering_only:
-        if level == 1:
+    fam = family_for(gr)
+    if primitive == SOCRATIC:
+        if fam == "error":
+            return "Your query didn't run — what do the table and column names in it refer to?"
+        if fam == "ordering":
+            return "Your rows look right — so what's different about the ORDER they come out in?"
+        if fam in ("membership",):
+            return ("Compare your rows to what the question asks for: which rows shouldn't be "
+                    "there, or are missing — and what do those rows have in common?")
+        return ("What is the question asking for that your query isn't producing? Look at one "
+                "row that's wrong and ask what your query did to it.")
+    if primitive == CONCEPTUAL:
+        if fam == "error":
+            return ("Your query has a syntax or naming problem — it can't run yet, so fix that "
+                    "before worrying about which rows it returns.")
+        if fam == "ordering":
             return "You're selecting the right rows, but think about the order they come out in."
-        if level == 2:
-            return "Revisit your ORDER BY — the problem asks for a specific sort (and tie-breaking) you're not applying."
-        return "Try: `... ORDER BY ___ <ASC|DESC>, ___ <ASC|DESC>` to match the required ordering."
-    # row-content mismatch
-    if level == 1:
-        return ("Your result set doesn't match: you're including or excluding the wrong rows. "
-                "Re-read which rows the question actually asks for.")
-    if level == 2:
-        # name the clauses to revisit when we know them; otherwise stay generic rather than
-        # emitting an empty "revisit: ." (a problem can carry no derived target_clauses).
-        if clauses:
-            return ("Look at how you filter and aggregate — revisit: "
-                    + ", ".join(clauses[:3]) + ". One of these isn't doing what the prompt requires.")
-        return ("Look at how you filter and aggregate — one of your clauses isn't doing what "
-                "the prompt requires.")
-    return ("Sketch the shape first: `SELECT ___ FROM ___ "
-            + ("GROUP BY ___ " if any("GROUP" in c.upper() for c in clauses) else "WHERE ___ ")
-            + "` and fill the blanks from the prompt — don't copy any answer.")
+        if fam == "membership":
+            return ("Your result includes or excludes the wrong rows — the issue is a boundary "
+                    "or a filter, not a calculation.")
+        return ("The shape of your result is off — think about how you're grouping or computing "
+                "values, not just which rows you keep.")
+    # DIRECTIVE
+    if fam == "error":
+        return ("Read the database error and fix it first: check that every table and column name "
+                "exists and is spelled the way the schema declares it.")
+    if clauses:
+        return ("Revisit your " + ", ".join(clauses[:3]) + " — one of these is the wrong "
+                "operation for what the prompt asks. Change that operation (not just a value) "
+                "so it does what the question describes.")
+    return ("Name the clause that produces the wrong part of your result and change the "
+            "operation it performs to match what the prompt asks — not just a literal value.")
+
+
+def render_diff_rung(gr: grader.GradeResult) -> str:
+    """The deterministic `diff`/`db_error` rung text (no model). For the error family this is
+    the database error; otherwise the family-aware rendered result-set diff."""
+    diff = gr.first_fail.diff if gr.first_fail else None
+    if diff is None:
+        return ""
+    if diff.sql_error:
+        return f"Your query did not run. The database reported:\n{diff.sql_error}"
+    return diff.to_text(family=family_for(gr))
+
+
+def _offline_hint(ctx: dict, gr: grader.GradeResult, level: int) -> str:
+    """Deterministic, LLM-free hint at `level` for this grade's family. Lets the harness run &
+    be tested with no model, and never emits the answer. Back-compat: still takes a level."""
+    primitive = primitive_at(gr, level)
+    if primitive in (DIFF, DB_ERROR):
+        return render_diff_rung(gr)
+    return _offline_primitive(primitive, ctx, gr)
 
 
 def generate_hint(problem, gr: grader.GradeResult, level: int, student_sql: str,
                   model: str | None = None) -> str:
-    """Produce a single hint at `level`. If `model` is None, use the offline templated
-    hint; otherwise call the pluggable model (gold query never included)."""
+    """Produce a single hint at `level`, choosing the primitive from the grade's family.
+    Deterministic rungs (diff / db_error) never call a model. For the model rungs: if `model`
+    is None use the offline template; otherwise call the pluggable model (gold never included)
+    and fall back to the offline template on empty/failed output."""
     ctx = model_context(problem)
+    primitive = primitive_at(gr, level)
+    if primitive in (DIFF, DB_ERROR):
+        return render_diff_rung(gr)
     if model is None:
-        return _offline_hint(ctx, gr, level)
+        return _offline_primitive(primitive, ctx, gr)
     import model as model_mod  # populator/model.py
-    prompt = build_hint_prompt(ctx, student_sql, gr.diff_text, level)
+    prompt = build_hint_prompt(ctx, student_sql, gr.diff_text, primitive)
     # hints are interactive: one retry, not the authoring loop's long exponential backoff —
     # if the model is unreachable we fall back to the offline templated hint within seconds
     out = model_mod.call(model, prompt, max_retries=1)
-    return (out.get("text") or "").strip() or _offline_hint(ctx, gr, level)
+    return (out.get("text") or "").strip() or _offline_primitive(primitive, ctx, gr)
 
 
 # --------------------------------------------------------------------------- #

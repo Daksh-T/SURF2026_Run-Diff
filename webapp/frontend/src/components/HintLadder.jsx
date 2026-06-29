@@ -1,27 +1,55 @@
-// Progressive disclosure, one axis of "how much help":
-//   L1 (model)  conceptual nudge — what KIND of thing is off
-//   L2 (model)  name the clause/operation to revisit
-//   L3 (deterministic, NO model) the concrete diverging rows from the grader's diff
+// Error-class-adaptive hint ladder (redesign 2026-06-28). The ladder is built from four
+// PRIMITIVES and which one sits at L1/L2/L3 depends on the grade's error-class FAMILY (sent by
+// the backend as `rung_plan`). The two deterministic primitives (`diff`, `db_error`) carry no
+// model text — they render the grader's evidence client-side and cannot leak. The model
+// primitives (`socratic`, `conceptual`, `directive`) are plain prose with no runnable SQL.
 //
-// L3 is execution-grounded evidence, never a query skeleton: a SQL skeleton derived from the
-// student's own query reveals the answer's shape by construction, so we don't draw one. The
-// student still has to infer which query change produces these rows. Because L1/L2 carry no
-// SQL and L3 is deterministic, none of the three rungs can hand over a runnable answer.
+//   membership / ordering : diff  -> socratic   -> conceptual
+//   structure (default)   : socratic -> conceptual -> directive   (never shows the raw diff)
+//   error                 : db_error -> conceptual -> directive
+//
+// So the diff rung can now appear at ANY level — there is no "L3 == diff" assumption anymore.
 
 import { Prose, DataTable } from "./bits.jsx";
 
-const LABELS = {
-  1: "Conceptual nudge",
-  2: "The clause to revisit",
-  3: "The rows that don't match",
+// Per-primitive rung labels. `diff`/`db_error` get a family-aware label below.
+const PRIMITIVE_LABELS = {
+  socratic: "A question to consider",
+  conceptual: "Conceptual nudge",
+  directive: "What to change",
+  db_error: "The database error",
+  diff: "The evidence",
 };
 
-// Column headers for the L3 evidence tables. Prefer the names the student's own query
-// returned (`resultCols`); fall back to generic positional headers when they're unavailable
-// or don't line up with the row width.
+function rungLabel(primitive, family) {
+  if (primitive === "diff") {
+    if (family === "ordering") return "What's out of order";
+    if (family === "schema") return "How your database differs";
+    return "The rows that don't match";
+  }
+  return PRIMITIVE_LABELS[primitive] || "Hint";
+}
+
+const DETERMINISTIC = new Set(["diff", "db_error"]);
+
+// Column headers for the evidence tables. Prefer the names the student's own query returned
+// (`resultCols`); fall back to generic positional headers when they're unavailable.
 function evidenceCols(resultCols, width) {
   if (Array.isArray(resultCols) && resultCols.length === width) return resultCols;
   return Array.from({ length: width }, (_, i) => `col ${i + 1}`);
+}
+
+// Column-shape mismatches surfaced as a SEPARATE annotation (redesign §4.2), never as row
+// redness. The backend computes these in diff.header_notes.
+function HeaderNotes({ notes }) {
+  if (!notes || notes.length === 0) return null;
+  return (
+    <ul className="diff-header-notes" style={{ margin: "0 0 8px", paddingLeft: 18 }}>
+      {notes.map((n, i) => (
+        <li key={i} className="run-hint" style={{ marginBottom: 2 }}>{n}</li>
+      ))}
+    </ul>
+  );
 }
 
 // L3 for state-graded questions (CREATE/INSERT/UPDATE/DELETE/DROP), built from diff.* fields
@@ -118,18 +146,27 @@ function EvidenceTable({ title, kind, rows, total, resultCols }) {
   );
 }
 
-// L3 content, built only from the diff we already have on the client (no gold query exists here).
+// The deterministic `diff` / `db_error` rung, built only from the diff we already hold on the
+// client (no gold query exists here).
 function Evidence({ diff, resultCols }) {
   if (!diff) return <span>Your result matches now — re-run to confirm.</span>;
   if (diff.kind === "state") return <StateEvidence diff={diff} />;
   if (diff.sql_error) {
     return <div className="rung-text">Your query didn't run, so there's nothing to compare. Fix the database error first:<pre>{diff.sql_error}</pre></div>;
   }
-  if (diff.ordering_only) {
-    return <span>Your rows are exactly right — only their order is off. Revisit the sort keys and their directions in your <code className="inline-code">ORDER BY</code>; the problem needs a specific order (including how ties are broken).</span>;
+  // header/column-shape mismatches: a separate annotation, not row redness (§4.2)
+  const headerNotes = <HeaderNotes notes={diff.header_notes} />;
+  if (diff.ordering_only || diff.family === "ordering") {
+    return (
+      <div>
+        {headerNotes}
+        <span>Your rows are exactly right — only their order is off. Revisit the sort keys and their directions in your <code className="inline-code">ORDER BY</code>; the problem needs a specific order (including how ties are broken).</span>
+      </div>
+    );
   }
   return (
     <div>
+      {headerNotes}
       <div style={{ marginBottom: 8 }}>Compared on one hidden test database, here's exactly where your rows diverge:</div>
       <div className="diff-rows">
         <EvidenceTable title="You're missing" kind="miss" rows={diff.missing} total={diff.missing_total} resultCols={resultCols} />
@@ -142,27 +179,36 @@ function Evidence({ diff, resultCols }) {
   );
 }
 
-export default function HintLadder({ hints, diff, resultCols, loading, onRequest, maxLevel = 3, locked = false, lockedReason }) {
-  const shown = hints.length;            // L1/L2 model hints already revealed
-  const l3Open = shown >= 3;             // L3 stored as a sentinel hint {level:3}
+export default function HintLadder({ hints, diff, resultCols, rungPlan, loading, onRequest, locked = false, lockedReason }) {
+  // The ladder shape comes from the backend's family-adaptive rung_plan; fall back to the
+  // legacy fixed shape if it isn't present (e.g. an older grade response in state).
+  const plan = Array.isArray(rungPlan) && rungPlan.length ? rungPlan : ["conceptual", "conceptual", "diff"];
+  const family = diff?.family;
+  const shown = hints.length;
   const next = shown + 1;
+  const allShown = shown >= plan.length;
 
   return (
     <div className="hints">
       <div className="section-label"><span className="eyebrow">Hints</span></div>
       <div className="ladder">
-        {hints.map((h) => (
-          <div className="rung open" key={h.level}>
-            <div className="rung-n">{h.level}</div>
-            <div className="rung-body">
-              <div className="rung-label">{LABELS[h.level]}</div>
-              <div className="rung-text">
-                {h.level === 3 ? <Evidence diff={diff} resultCols={resultCols} /> : <Prose text={h.text} />}
+        {hints.map((h) => {
+          const prim = h.primitive || plan[h.level - 1];
+          return (
+            <div className="rung open" key={h.level}>
+              <div className="rung-n">{h.level}</div>
+              <div className="rung-body">
+                <div className="rung-label">{rungLabel(prim, family)}</div>
+                <div className="rung-text">
+                  {DETERMINISTIC.has(prim)
+                    ? <Evidence diff={diff} resultCols={resultCols} />
+                    : <Prose text={h.text} />}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
-        {!l3Open && next <= maxLevel && (
+          );
+        })}
+        {!allShown && (
           <div className="rung locked">
             <div className="rung-n">{next}</div>
             <div className="rung-body hint-cta">
@@ -175,7 +221,7 @@ export default function HintLadder({ hints, diff, resultCols, loading, onRequest
                   <button className="btn ghost sm" onClick={() => onRequest(next)}>
                     {shown === 0 ? "Ask for a hint" : `Next hint`}
                   </button>
-                  <span className="run-hint">{LABELS[next]}</span>
+                  <span className="run-hint">{rungLabel(plan[next - 1], family)}</span>
                 </>
               )}
             </div>

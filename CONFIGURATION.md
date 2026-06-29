@@ -105,7 +105,8 @@ Friendly names resolve through `populator/model.py::REGISTRY`:
 
 | Name | Provider | Model |
 | --- | --- | --- |
-| `groq` | Groq (cloud) | `llama-3.3-70b-versatile` |
+| `groq` | Groq (cloud) | `qwen/qwen3.6-27b` *(default author model; reasoning — see below)* |
+| `groq-llama` | Groq (cloud) | `llama-3.3-70b-versatile` *(deprecated; kept as an alias for A/B comparison)* |
 | `gptoss` | Groq (cloud) | `openai/gpt-oss-120b` |
 | `qwen1.5b` | Ollama (local) | `qwen2.5-coder:1.5b` |
 | `qwen7b` | Ollama (local) | `qwen2.5-coder:7b` *(default hint model)* |
@@ -114,6 +115,31 @@ Friendly names resolve through `populator/model.py::REGISTRY`:
 | `qwen3coder` | Ollama (local) | `qwen3-coder:30b` |
 
 A cloud name needs the matching API key (§2); a local name needs Ollama serving that tag (§1).
+
+### Reasoning-model handling (Groq Qwen3)
+
+The default cloud author model migrated off Groq's deprecated `llama-3.3-70b-versatile` to
+`qwen/qwen3.6-27b`. Qwen3 is a **reasoning** model, which the provider layer
+(`eval/src/providers.py`) handles with two adjustments — relevant if you point
+`TUTOR_AUTHOR_MODEL` at any Qwen3-class Groq model:
+
+- **Strip the chain-of-thought.** The model emits an inline `<think>` block. The provider
+  sets `reasoning_format="hidden"` so this reasoning is dropped and does not pollute the
+  authored SQL.
+- **Avoid token starvation.** Reasoning tokens draw from the completion budget, so the
+  provider raises `max_completion_tokens` and, for Qwen3, sets `reasoning_effort="none"`.
+  Without this the model can spend its whole budget thinking and return empty output.
+
+The old `groq-llama` alias is retained for A/B comparison and needs neither adjustment. A100
+validation with the larger local `qwen3-coder:30b` authored all 10 reference problems
+successfully, indicating qwen-class authoring is sound.
+
+### Hint model vs author model
+
+These two are configured independently (see also §1 Notes). `TUTOR_HINT_MODEL` stays on the
+local `qwen2.5-coder:7b` via Ollama so student data never leaves the machine; only
+`TUTOR_AUTHOR_MODEL` moved to the cloud reasoning model, and authoring sees no student data.
+Changing one does not affect the other.
 
 ---
 
@@ -168,3 +194,25 @@ When the backend binds to `0.0.0.0` (desktop default), endpoints fall into three
 
 Both desktop builds consume the same two ingredients first: the built frontend (`dist/`) and the
 PyInstaller sidecar (`dist_backend/rundiff-backend/`).
+
+---
+
+## 8. Hint ladder behavior
+
+The hint ladder is **not** env-configurable; its ordering is data-driven by the grader. It is
+documented here because it determines what a given rung will and will not reveal. The grader
+classifies each wrong answer into an error-class family (from its own diff, with no model and
+no gold SQL) and the family fixes which of four primitives — `diff`, `socratic`, `conceptual`,
+`directive` — sits at L1/L2/L3. See `README.md` for the full family table and findings; the
+configuration-relevant points:
+
+- **Deterministic rungs render client-side.** `diff` (and `db_error` for failed queries) need
+  no model call and cannot leak the gold answer. The model-written rungs are still produced by
+  `TUTOR_HINT_MODEL` (§1).
+- **The `structure` family is the locked default** for anything not confidently classified; it
+  never shows the raw diff and ends on a `directive`.
+- **Redaction on state-modification problems.** For CREATE/INSERT/UPDATE/DELETE the student is
+  shown counts of missing gold rows but never the gold rows themselves (only samples of their
+  own extra rows). This is not tunable — it is a fixed safety rule.
+- **Per-problem `required_columns`** is the one opt-in grader knob: a problem may pin a required
+  output column name. It is backward-compatible and off unless a problem sets it.

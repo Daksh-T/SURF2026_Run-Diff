@@ -30,7 +30,8 @@ OLLAMA_URL = f"{OLLAMA_HOST}/api/chat"
 MODELS = {
     "gemma4-local":   ("ollama", "gemma4"),
     "phi4-local":     ("ollama", "phi4"),
-    "groq-llama3.3-70b": ("groq", "llama-3.3-70b-versatile"),
+    "groq-qwen3.6-27b":  ("groq", "qwen/qwen3.6-27b"),   # default authoring model (2026-06-29)
+    "groq-llama3.3-70b": ("groq", "llama-3.3-70b-versatile"),  # deprecated; kept for A/B
     "groq-gpt-oss-120b": ("groq", "openai/gpt-oss-120b"),
     "gemini-3.5-flash":  ("gemini", "gemini-3.5-flash"),
     "gemini-3.1-pro":    ("gemini", "gemini-3.1-pro-preview"),
@@ -38,6 +39,7 @@ MODELS = {
 
 # Approx USD per 1M tokens (input, output). Local = 0. Update as needed.
 PRICES = {
+    "groq-qwen3.6-27b":  (0.29, 0.59),   # APPROXIMATE — verify against Groq pricing
     "groq-llama3.3-70b": (0.59, 0.79),
     "groq-gpt-oss-120b": (0.15, 0.75),
     "gemini-3.5-flash":  (0.30, 2.50),
@@ -50,13 +52,35 @@ def _empty(latency, error=None):
             "latency_s": latency, "error": error}
 
 
+# Groq reasoning models (Qwen3, gpt-oss) emit <think>…</think> chain-of-thought inline in the
+# response content by default, which pollutes the SQL/hint text every caller here expects. Ask
+# Groq to strip it (reasoning_format="hidden") for those models; non-reasoning models (llama)
+# reject the param, so it is sent only when the model id is a known reasoning family.
+#
+# CRITICAL (regression found 2026-06-29): the reasoning tokens count against the completion
+# budget. With Groq's small default max, the model spends the whole budget THINKING and returns
+# EMPTY content (the authoring loop then fails @compile with code_len 0). So we must (a) raise
+# max_completion_tokens to leave room for the actual answer, and (b) for Qwen3 — whose authoring
+# quality does not need long CoT and whose token appetite blows the daily limit — disable
+# thinking outright with reasoning_effort="none" (only Qwen3 accepts none; gpt-oss does not, so
+# it just gets the larger budget). This restores llama-like behavior and cost.
+_GROQ_REASONING = ("qwen3", "gpt-oss")
+_GROQ_REASONING_MAX_TOKENS = 8192
+
+
 def gen_groq(model_id, prompt, timeout=120):
     t0 = time.time()
+    mid = model_id.lower()
+    body = {"model": model_id, "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}]}
+    if any(tag in mid for tag in _GROQ_REASONING):
+        body["reasoning_format"] = "hidden"            # strip <think> CoT, return only the answer
+        body["max_completion_tokens"] = _GROQ_REASONING_MAX_TOKENS  # leave room past reasoning
+        if "qwen3" in mid:
+            body["reasoning_effort"] = "none"          # no CoT for authoring (cost + budget)
     try:
         r = requests.post(GROQ_URL, timeout=timeout,
-            headers={"Authorization": f"Bearer {GROQ_KEY}"},
-            json={"model": model_id, "temperature": 0,
-                  "messages": [{"role": "user", "content": prompt}]})
+            headers={"Authorization": f"Bearer {GROQ_KEY}"}, json=body)
         dt = time.time() - t0
         if r.status_code != 200:
             return _empty(dt, f"HTTP {r.status_code}: {r.text[:200]}")

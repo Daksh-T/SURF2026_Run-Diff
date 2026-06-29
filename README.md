@@ -45,6 +45,70 @@ populator/        dataset generator                    (imported by the backend)
 eval/src/         LLM provider layer (Groq + Ollama)    (imported by the backend)
 ```
 
+## Hint ladder
+
+When the student's query disagrees with the gold result, the tutor offers up to three rungs
+of escalating help. The 2026 redesign replaced the old fixed ladder (L1 conceptual nudge →
+L2 name-the-clause → L3 query skeleton) with an **error-class-adaptive** ladder built from
+four primitives, ordered by the kind of mistake the grader detects.
+
+The four primitives:
+
+- **diff** — the deterministic result-set difference, rendered. No model call; computed
+  client-side, so it cannot leak the gold answer.
+- **socratic** — a single pointed question that prompts the student to locate the error
+  themselves.
+- **conceptual** — a one-sentence nudge naming the *kind* of mistake. No SQL, no clause
+  keyword.
+- **directive** — names the specific clause/operation and the nature of the fix, in prose.
+  No runnable SQL.
+
+(A fifth rung, **db_error**, surfaces the database error message when the query failed to run.)
+
+The grader classifies the mistake into a **family** purely from its own diff — no model and
+no gold SQL involved — and each family fixes which primitive sits at L1/L2/L3:
+
+| Family | Trigger | L1 | L2 | L3 |
+| --- | --- | --- | --- | --- |
+| membership | wrong rows included/excluded (boundary, off-by-one, dropped predicate) | diff | socratic | conceptual |
+| ordering | right rows, wrong order | diff (as "wrong order") | socratic | conceptual |
+| structure | wrong aggregate/join/grouping/projection, or column-count mismatch | socratic | conceptual | directive |
+| error | the query didn't run | db_error | conceptual | directive |
+
+Anything not confidently classified routes to `structure`, the locked default. The
+membership-vs-structure split is a heuristic: if differing rows pair up on a key column but
+differ on a computed column, it is `structure` (recomputed values); whole rows added or
+removed is `membership`. The `structure` family deliberately never shows the raw diff and
+ends on the directive. State-modification problems (CREATE/INSERT/UPDATE/DELETE) use a
+parallel taxonomy — `error`, `no_effect`, `schema`, `rows` — and honor a redaction rule: the
+student sees counts of missing gold rows but never the gold rows themselves, only samples of
+their own extra rows; the `rows` family is the one place the diff is partially blinded, so it
+ends on a directive.
+
+The old query-skeleton rung — the one rung that could leak the answer's shape — is retired.
+The deterministic rungs (`diff`, `db_error`) need no model call and render client-side, so
+they cannot leak.
+
+### Findings
+
+The redesign was evaluated for safety and for efficacy against a deliberately weak simulated
+student. The results show a genuine trade-off:
+
+- **Safety.** Across 75 benign and 80 adversarial-injection cases, 0 surfaced leaks and 0
+  raw leaks — strictly safer than the previous ladder, whose skeleton rung could occasionally
+  leak. The new highest-risk non-diff rung (directive) held at 0.
+- **Efficacy.** On a hard-error battery, the old ladder lifted the weak student's solve rate
+  by +0.4 (0.3 → 0.7); the new ordering is flat (about 0.5–0.6, no net lift),
+  reproducibly. This is a real regression on this metric and was anticipated: the weak
+  simulated student tends to ignore socratic *questions*, and the redesign retired the
+  concrete skeleton scaffold it leaned on. Showing the diff first helps a human *see* the
+  error but does not tell a weak model *how* to fix it. The redesign optimizes for safety and
+  for human pedagogy; the decisive efficacy test is the classroom pilot, not the simulated
+  student.
+
+The grader also gained optional per-problem `required_columns` enforcement (pin a required
+output column name). It is backward-compatible and off unless a problem opts in.
+
 ## Prerequisites
 
 - **[uv](https://docs.astral.sh/uv/)** — Python toolchain (backend targets Python ≥ 3.11).

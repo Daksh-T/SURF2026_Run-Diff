@@ -41,7 +41,7 @@ import grader            # noqa: E402
 import harness           # noqa: E402
 import model as model_mod  # noqa: E402  populator/model.py
 from problems import bank  # noqa: E402
-from leakage_eval import wrong_query  # noqa: E402  same committed-error battery
+from leakage_eval import wrong_query, wrong_queries_by_family  # noqa: E402  committed-error battery
 
 
 # --------------------------------------------------------------------------- #
@@ -108,12 +108,13 @@ def student_revise(student_model: str, problem, attempts: list[str],
 # --------------------------------------------------------------------------- #
 def run_session(pid: str, start_label: str, start_sql: str, cap: int,
                 tutor_model: str, student_model: str, max_turns: int,
-                persona: str = "capable") -> dict:
+                persona: str = "capable", family: str | None = None) -> dict:
     p = bank.get(pid)
     attempts, hints = [start_sql], []
     level = 0
     leaks = 0
     solved = False
+    primitives: list[str] = []
     for turn in range(1, max_turns + 1):
         gr = grader.grade(pid, attempts[-1])
         if gr.correct:
@@ -121,6 +122,7 @@ def run_session(pid: str, start_label: str, start_sql: str, cap: int,
             break
         if cap > 0:
             level = min(level + 1, cap)
+            primitives.append(harness.primitive_at(gr, level))
             hint = harness.generate_hint(p, gr, level, attempts[-1], model=tutor_model)
             if harness.leaks_answer(pid, hint):
                 leaks += 1
@@ -130,9 +132,10 @@ def run_session(pid: str, start_label: str, start_sql: str, cap: int,
             break
         attempts.append(student_revise(student_model, p, attempts, hints, turn + 1,
                                        persona=persona, error_label=start_label))
-    return {"pid": pid, "error": start_label, "cap": cap, "persona": persona,
+    return {"pid": pid, "error": start_label, "family": family, "cap": cap, "persona": persona,
             "reached_correct": solved, "n_turns": len(attempts),
             "max_hint_level": max((lv for lv, _ in hints), default=0),
+            "primitives": primitives,
             "leaks": leaks, "attempts": attempts,
             "hints": [{"level": lv, "text": h} for lv, h in hints]}
 
@@ -145,6 +148,10 @@ def main():
     ap.add_argument("--caps", default="0,1,2,3")
     ap.add_argument("--persona", default="committed", choices=["committed", "capable"])
     ap.add_argument("--problems", default="all")
+    ap.add_argument("--by-family", action="store_true",
+                    help="start a session per error-class family (membership/structure/ordering/"
+                         "error), so the solve curve can be reported per family (redesign §6.3). "
+                         "Default: one session per problem from the first committed error.")
     ap.add_argument("--out", default=str(HERE / "experiments" / "runs"))
     args = ap.parse_args()
 
@@ -160,40 +167,62 @@ def main():
 
     rows = []
     for pid in pids:
-        wq = wrong_query(pid)
-        if wq is None:
+        # one starting query per family (--by-family) or just the first committed error.
+        if args.by_family:
+            starts = [(fam, label, sql)
+                      for fam, (label, sql) in wrong_queries_by_family(pid).items()]
+        else:
+            wq = wrong_query(pid)
+            starts = [(None, wq[0], wq[1])] if wq else []
+        if not starts:
             print(f"skip {pid}: no wrong mutation", flush=True)
             continue
-        label, sql = wq
-        for cap in caps:
-            t0 = time.time()
-            r = run_session(pid, label, sql, cap, args.tutor_model,
-                            args.student_model, args.max_turns, persona=args.persona)
-            r["elapsed_s"] = round(time.time() - t0, 1)
-            rows.append(r)
-            jl.write(json.dumps(r) + "\n")
-            jl.flush()
-            print(f"{pid:20s} cap={cap}  solved={str(r['reached_correct']):5s} "
-                  f"turns={r['n_turns']} maxL={r['max_hint_level']} leaks={r['leaks']} "
-                  f"({r['elapsed_s']}s)", flush=True)
+        for family, label, sql in starts:
+            for cap in caps:
+                t0 = time.time()
+                r = run_session(pid, label, sql, cap, args.tutor_model,
+                                args.student_model, args.max_turns, persona=args.persona,
+                                family=family)
+                r["elapsed_s"] = round(time.time() - t0, 1)
+                rows.append(r)
+                jl.write(json.dumps(r) + "\n")
+                jl.flush()
+                print(f"{pid:20s} {str(family):11s} cap={cap}  "
+                      f"solved={str(r['reached_correct']):5s} "
+                      f"turns={r['n_turns']} maxL={r['max_hint_level']} leaks={r['leaks']} "
+                      f"({r['elapsed_s']}s)", flush=True)
     jl.close()
 
-    # summary per cap
-    summary = {"tutor_model": args.tutor_model, "student_model": args.student_model,
-               "persona": args.persona,
-               "max_turns": args.max_turns, "stamp": stamp, "per_cap": {}}
-    for cap in caps:
-        rs = [r for r in rows if r["cap"] == cap]
-        if not rs:
-            continue
+    def cap_stats(rs):
         solved = [r for r in rs if r["reached_correct"]]
-        summary["per_cap"][cap] = {
-            "n": len(rs), "solve_rate": round(len(solved) / len(rs), 3),
+        return {
+            "n": len(rs), "solve_rate": round(len(solved) / len(rs), 3) if rs else None,
             "avg_turns_when_solved": round(sum(r["n_turns"] for r in solved) / len(solved), 2)
                                      if solved else None,
-            "avg_max_hint_level": round(sum(r["max_hint_level"] for r in rs) / len(rs), 2),
+            "avg_max_hint_level": round(sum(r["max_hint_level"] for r in rs) / len(rs), 2)
+                                  if rs else None,
             "total_leaks_caught": sum(r["leaks"] for r in rs),
         }
+
+    # summary per cap, and per (family, cap) when --by-family. NOTE (redesign §6 caveat): the
+    # simulated student is a weak model that will likely IGNORE a `socratic` question rather than
+    # act on it the way a human would, so these curves UNDER-credit socratic rungs. Do not read a
+    # flat curve on a socratic-heavy family as "socratic is useless" — its real test is the pilot.
+    summary = {"tutor_model": args.tutor_model, "student_model": args.student_model,
+               "persona": args.persona, "by_family": args.by_family,
+               "max_turns": args.max_turns, "stamp": stamp,
+               "socratic_caveat": "weak sim student under-credits socratic rungs (see §6)",
+               "per_cap": {}}
+    for cap in caps:
+        rs = [r for r in rows if r["cap"] == cap]
+        if rs:
+            summary["per_cap"][cap] = cap_stats(rs)
+    if args.by_family:
+        families = sorted({r["family"] for r in rows if r["family"]})
+        summary["per_family_cap"] = {
+            fam: {cap: cap_stats([r for r in rows if r["family"] == fam and r["cap"] == cap])
+                  for cap in caps if any(r["family"] == fam and r["cap"] == cap for r in rows)}
+            for fam in families}
     spath = outdir / f"sim_student_{args.persona}_{stamp}.summary.json"
     spath.write_text(json.dumps(summary, indent=2))
     print("\n== SUMMARY ==")

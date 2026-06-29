@@ -317,16 +317,10 @@ export default function Student() {
 
   async function askHint(level) {
     if (sessionState !== "running" || graceLock) return; // hints are closed while paused/ended/closed
-    // L3 is the deterministic diff evidence — rendered from w.result.diff, no model call. We
-    // still POST it (best-effort) so the request is logged and counts toward Insights.
-    if (level >= 3) {
-      setW({ hints: [...w.hints, { level: 3 }] });
-      if (cls) {
-        api.hint(setId, active, w.sql, 3, { class_id: cls.class_id, student: cls.student })
-          .catch(() => {});
-      }
-      return;
-    }
+    // The ladder is now error-class-adaptive: the backend decides which PRIMITIVE sits at this
+    // level (from the grade's family). Deterministic rungs (`diff`/`db_error`) come back with
+    // hint:null and are rendered client-side from w.result.diff; model rungs carry text. Either
+    // way the request is logged server-side for Insights.
     setW({ hintLoading: true });
     try {
       const attrib = cls ? { class_id: cls.class_id, student: cls.student } : undefined;
@@ -335,7 +329,7 @@ export default function Student() {
         setW({ hintLoading: false });
         return;
       }
-      setW({ hintLoading: false, hints: [...w.hints, { level, text: res.hint }] });
+      setW({ hintLoading: false, hints: [...w.hints, { level, text: res.hint, primitive: res.primitive }] });
     } catch (e) {
       setW({ hintLoading: false });
       alert("Hint failed: " + e.message);
@@ -588,6 +582,7 @@ export default function Student() {
                     hints={w.hints}
                     diff={w.result.diff}
                     resultCols={w.result.student_result?.cols}
+                    rungPlan={w.result.rung_plan}
                     loading={w.hintLoading}
                     onRequest={askHint}
                     locked={sessionState !== "running" || graceLock}
