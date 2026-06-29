@@ -29,6 +29,7 @@ REGISTRY = {
     # deprecated by Groq) to Qwen3.6-27B. The old Llama is kept under `groq-llama` for A/B.
     "groq":   ("groq", "qwen/qwen3.6-27b"),
     "groq-llama": ("groq", "llama-3.3-70b-versatile"),  # deprecated; kept for comparison only
+    "qwen3.6-local": ("ollama", "qwen3.6:27b"),  # same weights as the `groq` author model, run locally
     "qwen1.5b": ("ollama", "qwen2.5-coder:1.5b"),  # weak model — the Phase-6 simulated student
     "qwen7b":  ("ollama", "qwen2.5-coder:7b"),
     "qwen14b": ("ollama", "qwen2.5-coder:14b"),
