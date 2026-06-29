@@ -98,10 +98,14 @@ _permute_db = grader.permute_db   # canonical implementation lives in tutor/grad
 # 2. GRADE  (runtime, NO gold SQL — compares against baked results)
 # --------------------------------------------------------------------------- #
 def grade_baked(problem_id: str, schema: str, generator_src: str, baked: dict,
-                student_sql: str) -> grader.GradeResult:
+                student_sql: str, enforce_column_names: bool = False) -> grader.GradeResult:
     """Grade a student query against the baked gold results. Reuses the grader's exact per-seed
     comparison (`grader._compare`) and result types — so a query graded here is identical to one
-    graded against the live gold query, minus the gold query."""
+    graded against the live gold query, minus the gold query.
+
+    When `enforce_column_names` is set (an instructor per-question switch), the student's result
+    headers must also match the gold's column names — the required names are the gold's own baked
+    column headers, so the instructor never types them. Off by default and backward-compatible."""
     populate = load_populate(generator_src)
     ordered = baked["ordered"]
     # only enforce a strict order when the gold ORDER BY actually imposes a total one; if gold
@@ -114,15 +118,18 @@ def grade_baked(problem_id: str, schema: str, generator_src: str, baked: dict,
         seed = bs["seed"]
         gold_cols = list(bs["cols"])
         gold_rows = [tuple(r) for r in bs["rows"]]
+        # required names come straight from the gold's headers when enforcement is on
+        required_columns = gold_cols if enforce_column_names else None
         conn = grader.build_db(prob, populate, seed)
         try:
             stu_cols, stu_rows = grader.run_query(conn, student_sql)
         except Exception as e:  # sqlite3.Error and friends
             sr = grader.SeedResult(seed, False,
                 grader.Diff(seed, ordered, len(gold_cols), 0, len(gold_rows), 0,
-                            sql_error=str(e)))
+                            gold_cols=gold_cols, sql_error=str(e)))
         else:
-            sr = grader._compare(seed, gold_cols, gold_rows, stu_cols, stu_rows, ordered)
+            sr = grader._compare(seed, gold_cols, gold_rows, stu_cols, stu_rows, ordered,
+                                 required_columns=required_columns)
             # ordering-ambiguity guard: a query that matches only because of incidental storage
             # order must ALSO match after the rows are permuted. If it doesn't, its ORDER BY is
             # under-specified (e.g. a missing tie-break) — report it as an ordering error.
@@ -179,6 +186,9 @@ def error_category(gr: grader.GradeResult) -> str | None:
         return "ordering"
     if d.gold_ncols != d.student_ncols:
         return "wrong columns"
+    # right values/shape but a pinned column NAME is missing (enforce_column_names)
+    if getattr(d, "required_columns_missing", None):
+        return "wrong column names"
     has_missing, has_extra = bool(d.missing), bool(d.extra)
     if has_extra and not has_missing:
         return "extra rows — filter too loose?"
@@ -254,7 +264,8 @@ def grade_problem(p: dict, sql: str):
     if p.get("kind", "select") == "state":
         import state_core as sc
         return sc.grade_baked_state(p["id"], p["schema"], p["generator_src"], p["baked"], sql)
-    return grade_baked(p["id"], p["schema"], p["generator_src"], p["baked"], sql)
+    return grade_baked(p["id"], p["schema"], p["generator_src"], p["baked"], sql,
+                       enforce_column_names=bool(p.get("enforce_column_names", False)))
 
 
 def student_result_for(p: dict, sql: str) -> dict | None:

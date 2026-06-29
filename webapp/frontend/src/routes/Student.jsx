@@ -347,6 +347,9 @@ export default function Student() {
     if (result.correct) return "Correct on every database.";
     if (d?.sql_error) return "Your query didn't run.";
     if (d?.ordering_only) return "Right rows — wrong order.";
+    // a pinned column-name mismatch (instructor enforced names): say so plainly — it's a
+    // naming issue, not a values giveaway, so it's surfaced in the verdict rather than via hints
+    if (d?.required_columns_missing?.length) return "Right results — but the column names don't match what's required.";
     return "Your result doesn't match yet.";
   }
 
@@ -544,6 +547,13 @@ export default function Student() {
                     <div className="verdict-sub">
                       passed {w.result.n_passed} of {w.result.n_seeds} databases
                     </div>
+                    {!w.result.correct && w.result.diff?.required_columns_missing?.length > 0 && (
+                      <ul className="verdict-colnotes" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                        {w.result.diff.header_notes?.map((n, i) => (
+                          <li key={i} className="run-hint" style={{ marginBottom: 2 }}>{n}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
 

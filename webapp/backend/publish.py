@@ -35,6 +35,9 @@ def publish(set_id: str, seeds: list[int] | None = None) -> dict:
             "schema": p["schema"],
             "generator_src": p["generator_src"],
             "target_clauses": p.get("target_clauses", []),
+            # per-question instructor switch: enforce result column NAMES (select-mode only).
+            # Carries the boolean only; the required names are the gold's own headers at grade time.
+            "enforce_column_names": bool(p.get("enforce_column_names", False)),
             "baked": baked,
         })
 

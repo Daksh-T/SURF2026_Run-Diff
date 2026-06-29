@@ -4,9 +4,9 @@ Technical reference for every environment variable, persisted setting, and build
 app reads. For *using* the app see `webapp/user_guide.md`; for hosting/network sync see
 `webapp/network_sync_guide.md`; for the architecture see `README.md`.
 
-> Scope: this covers the **app** (backend runtime, desktop shells, builds). Configuration for
-> the offline **research/CLI tooling** under `populator/` and `tutor/` is intentionally left out
-> for now and will be added once that pipeline settles.
+> Scope: this covers the **app** (backend runtime, desktop shells, builds) and the model/provider
+> configuration shared by the offline **research/CLI tooling** under `populator/` and `tutor/`
+> (see §5 and §9).
 
 Quick map of where configuration comes from:
 
@@ -71,7 +71,7 @@ groq_api_key=gsk_...
 
 ## 3. Persisted per-install settings — `<data>/config.json`
 
-Not environment variables, but the other half of configuration. Stored in
+Stored in
 `config.json` under `TUTOR_DATA_DIR`, managed at runtime through the Author UI (or the
 `/api/auth/*` and `/api/instructor/config` endpoints). You normally never edit it by hand.
 
@@ -130,9 +130,7 @@ The default cloud author model migrated off Groq's deprecated `llama-3.3-70b-ver
   provider raises `max_completion_tokens` and, for Qwen3, sets `reasoning_effort="none"`.
   Without this the model can spend its whole budget thinking and return empty output.
 
-The old `groq-llama` alias is retained for A/B comparison and needs neither adjustment. A100
-validation with the larger local `qwen3-coder:30b` authored all 10 reference problems
-successfully, indicating qwen-class authoring is sound.
+The old `groq-llama` alias is retained for A/B comparison and needs neither adjustment.
 
 ### Hint model vs author model
 
@@ -203,7 +201,7 @@ The hint ladder is **not** env-configurable; its ordering is data-driven by the 
 documented here because it determines what a given rung will and will not reveal. The grader
 classifies each wrong answer into an error-class family (from its own diff, with no model and
 no gold SQL) and the family fixes which of four primitives — `diff`, `socratic`, `conceptual`,
-`directive` — sits at L1/L2/L3. See `README.md` for the full family table and findings; the
+`directive` — sits at L1/L2/L3. See `README.md` for the full family table; the
 configuration-relevant points:
 
 - **Deterministic rungs render client-side.** `diff` (and `db_error` for failed queries) need
@@ -213,6 +211,32 @@ configuration-relevant points:
   never shows the raw diff and ends on a `directive`.
 - **Redaction on state-modification problems.** For CREATE/INSERT/UPDATE/DELETE the student is
   shown counts of missing gold rows but never the gold rows themselves (only samples of their
-  own extra rows). This is not tunable — it is a fixed safety rule.
-- **Per-problem `required_columns`** is the one opt-in grader knob: a problem may pin a required
-  output column name. It is backward-compatible and off unless a problem sets it.
+  own extra rows).
+- **Per-problem column-name enforcement.** A question may require its result column *names* to
+  match (not just the values). Instructors toggle it per question in the Author UI (it works for
+  questions inside a set too); the setting rides with the published question, and the grader
+  marks a query wrong until the headers match. Off by default and backward-compatible.
+
+---
+
+## 9. Research / CLI tooling
+
+The offline research harness under `populator/` and `tutor/` (problem authoring, the grader,
+the leakage/efficacy evals, the model card) is **not** configured through `config.json` or the
+env vars in §1. It shares two things with the app and is otherwise driven by command-line flags:
+
+- **Models** resolve through the same registry in §5 (`populator/model.py::REGISTRY`) — the same
+  friendly names (`groq`, `qwen7b`, `qwen1.5b`, …) the app uses.
+- **Provider credentials/host** come from the same place as the app: `groq_api_key` (§2) for
+  Groq, `OLLAMA_HOST` (§1) for a non-default Ollama address.
+
+Entry points and their main flags (run with `--help` for the full set):
+
+| Tool | Purpose | Key flags |
+| --- | --- | --- |
+| `tutor/leakage_eval.py` | leakage suite (benign + injection) | `--model` |
+| `tutor/sim_student_eval.py` | hint-efficacy solve curve | `--tutor-model`, `--student-model`, `--by-family`, `--caps` |
+| `next-steps/run_model_card.py` | one-command scorecard per model | `--model`, `--role`, `--quick` |
+| `next-steps/freeze_fixtures.py` | re-freeze the eval fixtures | (none) |
+
+These run against frozen fixtures so scores stay comparable across model runs.

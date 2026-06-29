@@ -643,6 +643,7 @@ function SetCard({ set, onPublish, onMove, onDelete, onPatch, onReauthorSchema, 
   const [editDifficulty, setEditDifficulty] = useState("medium");
   const [editPrompt, setEditPrompt] = useState("");
   const [editSchema, setEditSchema] = useState("");
+  const [editEnforceCols, setEditEnforceCols] = useState(false);
   const [rebuilding, setRebuilding] = useState(null); // problem id currently rebuilding, or null
   const [rowError, setRowError] = useState(null); // {pid, text}
 
@@ -669,6 +670,7 @@ function SetCard({ set, onPublish, onMove, onDelete, onPatch, onReauthorSchema, 
     setEditDifficulty(p.difficulty || "medium");
     setEditPrompt(p.prompt || "");
     setEditSchema(p.schema || "");
+    setEditEnforceCols(!!p.enforce_column_names);
     setRowError(null);
   }
 
@@ -685,13 +687,13 @@ function SetCard({ set, onPublish, onMove, onDelete, onPatch, onReauthorSchema, 
         setRowError({ pid, text: `Rebuild failed at ${result?.stage}: ${result?.reason}` });
         return;
       }
-      // title/difficulty/prompt may have changed too — apply them on the rebuilt problem
-      if (editTitle !== p.title || editDifficulty !== (p.difficulty || "medium") || editPrompt !== (p.prompt || "")) {
-        await onPatch(pid, { title: editTitle, difficulty: editDifficulty, prompt: editPrompt });
+      // title/difficulty/prompt/enforce may have changed too — apply them on the rebuilt problem
+      if (editTitle !== p.title || editDifficulty !== (p.difficulty || "medium") || editPrompt !== (p.prompt || "") || editEnforceCols !== !!p.enforce_column_names) {
+        await onPatch(pid, { title: editTitle, difficulty: editDifficulty, prompt: editPrompt, enforce_column_names: editEnforceCols });
       }
       return;
     }
-    await onPatch(pid, { title: editTitle, difficulty: editDifficulty, prompt: editPrompt });
+    await onPatch(pid, { title: editTitle, difficulty: editDifficulty, prompt: editPrompt, enforce_column_names: editEnforceCols });
     setEditing(null);
   }
 
@@ -745,6 +747,12 @@ function SetCard({ set, onPublish, onMove, onDelete, onPatch, onReauthorSchema, 
                     <label>Schema <span className="hint-line">— editing the schema rebuilds the practice data against it</span></label>
                     <textarea className="input mono" rows={5} value={editSchema} onChange={(e) => setEditSchema(e.target.value)} />
                   </div>
+                  {p.kind !== "state" && (
+                    <label className="enforce-cols-toggle" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, margin: "2px 0" }}>
+                      <input type="checkbox" checked={editEnforceCols} onChange={(e) => setEditEnforceCols(e.target.checked)} />
+                      <span>Require exact column names <span className="hint-line">— the student's result headers must match the answer's (e.g. an <code className="inline-code">AS</code> alias); takes effect on next publish</span></span>
+                    </label>
+                  )}
                   <div className="mgmt-edit-actions">
                     <button className="btn sm primary" onClick={() => saveEdit(p)}>Save</button>
                     <button className="btn sm" onClick={() => setEditing(null)}>Cancel</button>
@@ -754,6 +762,7 @@ function SetCard({ set, onPublish, onMove, onDelete, onPatch, onReauthorSchema, 
                 <div className="mgmt-row" style={{ padding: 0, border: "none" }}>
                   <span className="mgmt-row-main" onClick={() => startEdit(p)} data-tip="Click to edit">
                     <b>{p.title}</b> <span className="run-hint">· {p.target_clauses?.join(", ")}</span>
+                    {p.enforce_column_names && <span className="tag" data-tip="Result column names are enforced" style={{ marginLeft: 6 }}>column names</span>}
                   </span>
                   {rebuilding === p.id ? (
                     <span className="thinking"><span className="spin" /> rebuilding data…</span>

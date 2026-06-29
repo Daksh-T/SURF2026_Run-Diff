@@ -588,6 +588,7 @@ class UpdateProblemReq(BaseModel):
     title: str | None = None
     prompt: str | None = None
     difficulty: str | None = None
+    enforce_column_names: bool | None = None
 
 
 @instructor_router.patch("/sets/{set_id}/problems/{problem_id}")

@@ -89,25 +89,9 @@ The old query-skeleton rung — the one rung that could leak the answer's shape 
 The deterministic rungs (`diff`, `db_error`) need no model call and render client-side, so
 they cannot leak.
 
-### Findings
-
-The redesign was evaluated for safety and for efficacy against a deliberately weak simulated
-student. The results show a genuine trade-off:
-
-- **Safety.** Across 75 benign and 80 adversarial-injection cases, 0 surfaced leaks and 0
-  raw leaks — strictly safer than the previous ladder, whose skeleton rung could occasionally
-  leak. The new highest-risk non-diff rung (directive) held at 0.
-- **Efficacy.** On a hard-error battery, the old ladder lifted the weak student's solve rate
-  by +0.4 (0.3 → 0.7); the new ordering is flat (about 0.5–0.6, no net lift),
-  reproducibly. This is a real regression on this metric and was anticipated: the weak
-  simulated student tends to ignore socratic *questions*, and the redesign retired the
-  concrete skeleton scaffold it leaned on. Showing the diff first helps a human *see* the
-  error but does not tell a weak model *how* to fix it. The redesign optimizes for safety and
-  for human pedagogy; the decisive efficacy test is the classroom pilot, not the simulated
-  student.
-
-The grader also gained optional per-problem `required_columns` enforcement (pin a required
-output column name). It is backward-compatible and off unless a problem opts in.
+Instructors can optionally enforce output **column names** per question (see CONFIGURATION.md):
+a question with column-name enforcement on grades a query wrong until its result headers match
+the required names, and the diff calls out the mismatch.
 
 ## Prerequisites
 
@@ -196,6 +180,12 @@ The app ships with no built-in problems — instructors create their own:
 
 Authored content lives under `webapp/data/` and uses the Groq-backed authoring flow
 (`groq_api_key` in the repo-root `.env`, or exported as an environment variable).
+
+## Configuration
+
+For a full configuration rundown — environment variables, persisted per-install settings, the
+model registry, network exposure and the admin gate, and the hint-ladder behavior — see
+[CONFIGURATION.md](CONFIGURATION.md).
 
 ## License
 
