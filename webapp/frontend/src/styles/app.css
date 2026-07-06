@@ -118,7 +118,12 @@
 .pitem .numeral { font-size: 17px; color: var(--muted); grid-row: span 2; }
 .pitem-title { font-size: 14px; font-weight: 600; line-height: 1.25; }
 .pitem-meta { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.pitem.solved .numeral::after { content: "✓"; color: var(--green); }
+.pitem.solved { grid-template-columns: 46px 1fr; }
+.pitem.solved .numeral::after { content: "✓"; color: var(--green); padding-inline: 5px; }
+
+.enforce-cols-toggle {
+  display: flex; align-items: baseline; gap: 8px; cursor: pointer; font-size: 13.5px;
+}
 
 /* ---- work area ---------------------------------------------------- */
 .work { flex: 1; min-width: 0; overflow-y: auto; padding: 26px 32px 80px; }

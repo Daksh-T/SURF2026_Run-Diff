@@ -468,6 +468,7 @@ class AuthorReq(BaseModel):
     gold_sql: str
     title: str
     difficulty: str = "medium"
+    enforce_column_names: bool = False
     confirmed_nudges: list[dict] = []
     ddl: str | None = None
     predict: bool = False
@@ -479,6 +480,8 @@ def _run_author(job_id: str, req: AuthorReq):
                                   req.title, req.difficulty,
                                   confirmed_nudges=req.confirmed_nudges, ddl=req.ddl,
                                   predict=req.predict)
+        if result.get("status") == "ok" and result.get("kind") != "state":
+            result["problem"]["enforce_column_names"] = req.enforce_column_names
         with _JOBS_LOCK:
             _JOBS[job_id] = {"state": "done", "result": result}
     except Exception as e:  # noqa: BLE001 — surface any authoring crash to the UI
@@ -619,6 +622,10 @@ def _run_reauthor_problem(job_id: str, set_id: str, problem_id: str, req: Reauth
         result = authoring.author(p["prompt"], p["gold_sql"], AUTHOR_MODEL,
                                     p["title"], p.get("difficulty", "medium"), ddl=req.ddl)
         if result.get("status") == "ok":
+            # Rebuilding the generated data must not silently reset instructor grading options.
+            if result.get("kind") != "state":
+                result["problem"]["enforce_column_names"] = bool(
+                    p.get("enforce_column_names", False))
             store.replace_problem(set_id, problem_id, result["problem"])
         with _JOBS_LOCK:
             _JOBS[job_id] = {"state": "done", "result": result}
