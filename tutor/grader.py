@@ -67,6 +67,11 @@ def run_query(conn: sqlite3.Connection, sql: str):
     return cols, cur.fetchall()
 
 
+def _quote_ident(name: str) -> str:
+    """Quote an SQLite identifier (table/column names may start with digits or be keywords)."""
+    return '"' + (name or "").replace('"', '""') + '"'
+
+
 def permute_db(conn: sqlite3.Connection) -> None:
     """Re-insert every table's rows in REVERSED storage order, so the incidental order SQLite
     returns for an under-specified query flips. A query whose ORDER BY imposes a TOTAL order is
@@ -78,15 +83,17 @@ def permute_db(conn: sqlite3.Connection) -> None:
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
     for t in tables:
-        info = conn.execute(f"PRAGMA table_info({t})").fetchall()  # (cid,name,type,notnull,dflt,pk)
+        qt = _quote_ident(t)
+        info = conn.execute(f"PRAGMA table_info({qt})").fetchall()  # (cid,name,type,notnull,dflt,pk)
         cols = [c[1] for c in info]
         int_pk = {c[1] for c in info if c[5] and (c[2] or "").upper() == "INTEGER"}
-        rows = conn.execute(f"SELECT {', '.join(cols)} FROM {t}").fetchall()
-        conn.execute(f"DELETE FROM {t}")
+        qcols = ", ".join(_quote_ident(c) for c in cols)
+        rows = conn.execute(f"SELECT {qcols} FROM {qt}").fetchall()
+        conn.execute(f"DELETE FROM {qt}")
         ph = ", ".join("?" * len(cols))
         reinsert = [tuple(None if c in int_pk else v for c, v in zip(cols, r))
                     for r in reversed(rows)]
-        conn.executemany(f"INSERT INTO {t}({', '.join(cols)}) VALUES ({ph})", reinsert)
+        conn.executemany(f"INSERT INTO {qt}({qcols}) VALUES ({ph})", reinsert)
     conn.commit()
 
 
