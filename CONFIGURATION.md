@@ -1,242 +1,296 @@
-# Run·Diff — Configuration reference
+# Run·Diff configuration reference
 
-Technical reference for every environment variable, persisted setting, and build-time flag the
-app reads. For *using* the app see `webapp/user_guide.md`; for hosting/network sync see
-`webapp/network_sync_guide.md`; for the architecture see `README.md`.
+This is the authoritative reference for settings read by the Run·Diff app and its build tools.
+For a guided installation and normal student or instructor workflows, use the
+[User guide](USER_GUIDE.md). For architecture and developer orientation, use the
+[README](README.md).
 
-> Scope: this covers the **app** (backend runtime, desktop shells, builds) and the model/provider
-> configuration shared by the offline **research/CLI tooling** under `populator/` and `tutor/`
-> (see §5 and §9).
+Most users do not need to edit configuration files. The app's Author interface manages the
+author password and class-server address. Environment variables are mainly for source installs,
+custom model hosts, and self-hosted deployments.
 
-Quick map of where configuration comes from:
+## Configuration at a glance
 
-| Layer | Mechanism | Who sets it |
+| Type | Where it is set | Typical owner |
 | --- | --- | --- |
-| Backend runtime | environment variables | you (dev), or the desktop shell (packaged) |
-| API keys | repo-root `.env` (or env vars) | you |
-| Per-install settings | `<data>/config.json` | the Author UI / API at runtime |
-| Desktop shells | hardcoded constants + env passed to the sidecar | the shell |
-| Builds | env vars + script flags | you / CI |
+| Backend runtime | environment variables before the backend starts | developer or administrator |
+| Cloud credentials | repo-root `.env` or environment variables | instructor or administrator |
+| App settings | `<data>/config.json`, normally changed in the Author UI | instructor |
+| Classroom settings | `<data>/classes/*.json`, changed in Author → Classes | instructor |
+| Desktop runtime | constants and environment set by the desktop shell | application build |
+| Build settings | script flags and environment variables | developer or CI |
 
----
+Runtime values are read when the backend process starts. Restart Run·Diff after changing an
+environment variable. Values saved through the app take effect immediately unless noted.
 
-## 1. Backend runtime environment variables
+## Backend environment variables
 
-Read by the FastAPI backend (`webapp/backend/`). In dev you export these before
-`uv run uvicorn app:app`; in a packaged build the desktop shell sets them when it spawns the
-sidecar (see §4). All are optional — every one has a default.
+All variables are optional.
 
-| Variable | Default | Read in | What it does |
-| --- | --- | --- | --- |
-| `HOST` | `127.0.0.1` | `run_server.py` | Bind address for the server. The desktop shells set this to `0.0.0.0` so students can reach the class server over the LAN. |
-| `PORT` | `8077` | `run_server.py`, `app.py` | TCP port. Also reported to students by `/api/instructor/host-info`. |
-| `TUTOR_DATA_DIR` | repo `webapp/data/` | `store.py` | Writable data root for all persisted state (sets, bundles, classes, attempts, `config.json`). `config.py` and `classes.py` derive their paths from it, so this one switch relocates everything. Packaged builds point it at a per-user app dir. |
-| `TUTOR_FRONTEND_DIST` | `../frontend/dist` | `static.py` | Directory of the built frontend the backend serves. If unset and the default dir is absent, the backend runs API-only (the dev path, where Vite serves the UI). |
-| `TUTOR_HINT_MODEL` | `qwen7b` | `app.py`, `setup_ollama.py` | Friendly name (see §5) of the **local** model used for L1/L2 hints. Resolved to an Ollama tag for status/pull. |
-| `TUTOR_AUTHOR_MODEL` | `groq` | `app.py` | Friendly name (see §5) of the model used for **authoring** (schema inference, generator synthesis). Cloud is fine here — authoring sees no student data. |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | `setup_ollama.py`, `eval/src/providers.py` | Base URL of the Ollama server. Used for first-run detection/pull **and** for actually generating hints, so a non-default address works end to end. |
-| `RUNDIFF_ALLOW_REMOTE_ADMIN` | unset (off) | `app.py` | Opt in to reaching the **instructor/admin** API (`/api/instructor/*`, `/api/auth/set`, `/api/auth/clear`) from another device. Off by default these are **local-only** (loopback). Accepts `1`/`true`/`yes`/`on`. See §6. |
-
-### Notes
-- **`HINT_MODEL` vs `AUTHOR_MODEL`.** Hints must stay local (student data never leaves the
-  machine), so `TUTOR_HINT_MODEL` should be an Ollama model. Authoring may use a cloud model.
-- **Difficulty prediction models are fixed**, not env-configurable: `predictor.py` hardcodes the
-  simulated student (`qwen2.5-coder:1.5b`) and tutor (`qwen2.5-coder:7b`).
-- With no hint model installed, hints fall back to deterministic offline templates — the app is
-  fully usable; only model-written L1/L2 phrasing is missing.
-
----
-
-## 2. API keys — repo-root `.env`
-
-`eval/src/providers.py` calls `load_dotenv(<repo-root>/.env)` at import (and the webapp imports
-this transitively for authoring). So put cloud keys in the **repo-root `.env`** — i.e.
-`/.env`, next to this file — or export them as real environment variables (either works; an
-exported var wins over `.env`).
-
-| Key | Used by | Needed for |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `groq_api_key` | `providers.gen_groq` | Instructor **authoring** (the default `groq` author model). Not needed to run, grade, take problems, or get hints. |
-| `aistudio_api_key` | `providers.gen_gemini` | Google AI Studio / Gemini models — only if you select a Gemini model (research/eval; not used by the default webapp flow). |
+| `HOST` | `127.0.0.1` | Address used by `webapp/backend/run_server.py`. Use `0.0.0.0` to listen on every interface. Packaged desktop shells set this to `0.0.0.0`; their own window still connects over loopback. |
+| `PORT` | `8077` | Backend port. It is also used when the app reports possible LAN addresses. The packaged shells and their windows are fixed to `8077`, so changing it is supported for source/server runs, not for an unmodified packaged shell. |
+| `TUTOR_DATA_DIR` | `webapp/data/` | Writable root for private sets, published bundles, classrooms, attempts, and `config.json`. Relative paths are resolved from the backend process's working directory; an absolute path is safer. |
+| `TUTOR_FRONTEND_DIST` | `webapp/frontend/dist/` | Directory containing a built Vite app, including `index.html`. If neither this path nor the default build exists, the backend runs API-only and Vite should serve the UI. |
+| `TUTOR_HINT_MODEL` | `qwen7b` | Friendly model-registry name used for student hints. The default resolves to Ollama's `qwen2.5-coder:7b`. A raw Ollama tag is recognized by first-run setup only; normal hint generation expects a registry name, so use a listed name below. |
+| `TUTOR_AUTHOR_MODEL` | `groq` | Friendly model-registry name used for schema inference and generated-data authoring. The default resolves to Groq's `qwen/qwen3.6-27b`. |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL used both for setup/status/model pulls and actual model calls. Do not include `/api/chat`. |
+| `RUNDIFF_ALLOW_REMOTE_ADMIN` | unset / false | Allows `/api/instructor/*`, `/api/auth/set`, and `/api/auth/clear` from non-loopback clients. Accepted true values are `1`, `true`, `yes`, and `on` (case-insensitive). See [Network exposure](#network-exposure-and-security). |
 
+Example source-server configuration:
+
+```bash
+export HOST=0.0.0.0
+export PORT=8077
+export TUTOR_DATA_DIR="$HOME/rundiff-data"
+export TUTOR_HINT_MODEL=qwen7b
+export TUTOR_AUTHOR_MODEL=groq
+uv run python run_server.py
 ```
-# /.env  (repo root, gitignored)
+
+Use this from `webapp/backend/`. `uv run uvicorn app:app ...` is also valid, but Uvicorn's CLI
+flags determine its host and port; setting `HOST` alone does not override an explicit
+`--host` value.
+
+### Important model behavior
+
+- Grading never requires a language model.
+- If the hint model fails or is unavailable, the backend returns deterministic built-in hints.
+- Difficulty prediction does not follow `TUTOR_HINT_MODEL`: it currently fixes the simulated
+  student to `qwen2.5-coder:1.5b` and the tutor to the `qwen7b` registry entry.
+- The first-run setup page can pull only an Ollama-backed hint model. Do not configure a cloud
+  registry name as `TUTOR_HINT_MODEL` if you want the privacy and setup behavior promised by the
+  app.
+
+## API keys and `.env`
+
+The provider layer loads `.env` from the repository root—the directory containing this file.
+Real environment variables take precedence over values loaded from `.env`.
+
+```dotenv
+# .env at the repository root
 groq_api_key=gsk_...
-# aistudio_api_key=...   # only if using Gemini
+# aistudio_api_key=...  # only for Gemini research/provider calls
 ```
 
-> Note: `.env` is gitignored. Never commit keys.
+| Key | Required when | Not required for |
+| --- | --- | --- |
+| `groq_api_key` | `TUTOR_AUTHOR_MODEL` selects `groq`, `groq-llama`, or `gptoss` | installing the app, joining a class, grading, local hints, publishing an already-authored set |
+| `aistudio_api_key` | calling a Gemini model through `eval/src/providers.py` | the default web app, whose app model registry has no Gemini entry |
 
----
+The variable names are intentionally lowercase because that is what the code reads. `.env` is
+ignored by Git. Never commit credentials or include them in an assignment export.
 
-## 3. Persisted per-install settings — `<data>/config.json`
+In a packaged desktop build there is no repo-root `.env` beside the source tree. Launch the app
+from an environment containing the key, or configure the key in whatever process manager starts
+a custom backend. A normal student installation needs no cloud key.
 
-Stored in
-`config.json` under `TUTOR_DATA_DIR`, managed at runtime through the Author UI (or the
-`/api/auth/*` and `/api/instructor/config` endpoints). You normally never edit it by hand.
+## Persistent application settings
 
-| Field | Default | Set via | Meaning |
+`<data>` means the directory selected by `TUTOR_DATA_DIR`. The app stores these two global
+settings in `<data>/config.json`:
+
+| Field | Default | UI control | Meaning |
 | --- | --- | --- | --- |
-| `author_password_sha256` | `null` | Author lock control / `POST /api/auth/set` | SHA-256 of the author password. `null` = authoring is open (single-user). When set, every `/api/instructor/*` request must carry a matching `X-Author-Key`. |
-| `instructor_url` | `null` | Author → Classes sync panel / `PATCH /api/instructor/config` | This machine's publicly reachable address. When set ("Host on this network"), it is baked into exported assignment files and enables live attempt sync; it also flips the LAN-facing student endpoints on (see §6). |
+| `author_password_sha256` | `null` | Author toolbar → Set/Change/Remove password | SHA-256 digest of the author password. The plaintext is not stored. `null` means the local Author area is open. |
+| `instructor_url` | `null` | Author → Classes → Host on this network / Enter URL manually / Turn off | Publicly reachable base URL for this class server, such as `http://192.168.1.5:8077`. A non-empty value enables LAN assignment fetch and attempt ingest and is embedded in exported assignments. |
 
----
+Example shape—not a recommended way to set a password:
 
-## 4. Desktop shells
+```json
+{
+  "author_password_sha256": null,
+  "instructor_url": "http://192.168.1.5:8077"
+}
+```
 
-Both shells (`webapp/desktop/main.js` Electron, `webapp/desktop-macos/RunDiff.swift` WKWebView)
-use the same hardcoded constants and pass env to the backend sidecar they spawn.
+Prefer the UI. Manually entering a plaintext password in this field will not work because the app
+compares SHA-256 digests.
 
-| Constant | Value | Why |
+### Classroom settings
+
+Classroom records are managed through Author → Classes rather than a global configuration file.
+Each record can contain:
+
+- one or more published set IDs;
+- `open`, `roster`, or `passcode` entry mode;
+- a shared three-word class passphrase and, in passcode mode, one personal code per roster name;
+- an optional opening and closing time, stored as UTC ISO timestamps;
+- active or archived status; and
+- live session state: `running`, `paused`, or `ended`.
+
+Changing a classroom's roster in passcode mode preserves codes for unchanged names and creates
+codes for new names. Its ID and shared passphrase are immutable through the UI.
+
+## Data directory and backups
+
+The data root contains:
+
+```text
+<data>/
+  config.json             global password digest and class-server URL
+  sets/<set-id>.json      private authoring source, including gold SQL
+  bundles/<set-id>.json   published student-safe grading bundle
+  classes/<class-id>.json classroom configuration and credentials
+  attempts/<class-id>.jsonl
+                          grade and hint events, one JSON record per line
+```
+
+Default locations:
+
+| Runtime | Data location |
+| --- | --- |
+| Source checkout | `webapp/data/` |
+| Native macOS app | `~/Library/Application Support/RunDiff/data/` |
+| Electron packaged app on macOS | Electron's Run·Diff user-data directory, typically `~/Library/Application Support/Run·Diff/data/` |
+| Tauri Windows/Linux app | the operating system's app-local-data directory for `edu.sewanee.surf.rundiff`, under `data/` |
+
+The exact Tauri parent path follows the operating system. Set `TUTOR_DATA_DIR` on a source/server
+deployment when you need a predictable location.
+
+To back up an installation, close Run·Diff and copy the entire data directory. Copying only
+`sets/` loses published bundles and classrooms; copying only `attempts/` loses the class records
+needed to interpret them. Treat this backup as sensitive because source sets contain expected SQL,
+class files contain join credentials, and attempt logs contain student names and submitted SQL.
+
+Deleting a classroom removes its active class record and renames its attempt log to
+`<class-id>.deleted-<UTC timestamp>.jsonl`. The UI no longer shows its insights. Deleting a student
+or an individual attempt rewrites the active attempt log and is permanent. Deleting a set removes
+its source and published bundle and is blocked while a classroom still assigns it.
+
+## Model registry
+
+`TUTOR_HINT_MODEL` and `TUTOR_AUTHOR_MODEL` use names from `populator/model.py`:
+
+| Name | Provider | Concrete model | Intended use |
+| --- | --- | --- | --- |
+| `groq` | Groq | `qwen/qwen3.6-27b` | default cloud authoring model |
+| `groq-llama` | Groq | `llama-3.3-70b-versatile` | deprecated comparison alias |
+| `gptoss` | Groq | `openai/gpt-oss-120b` | alternate cloud model |
+| `qwen3.6-local` | Ollama | `qwen3.6:27b` | local form of the authoring model |
+| `qwen1.5b` | Ollama | `qwen2.5-coder:1.5b` | small local model / simulated student |
+| `qwen7b` | Ollama | `qwen2.5-coder:7b` | default student-hint model |
+| `qwen14b` | Ollama | `qwen2.5-coder:14b` | larger local alternative |
+| `qwen32b` | Ollama | `qwen2.5-coder:32b` | larger local alternative |
+| `qwen3coder` | Ollama | `qwen3-coder:30b` | local mixture-of-experts alternative |
+
+Cloud models require the corresponding API key and internet access. Ollama models must already be
+present or must be pulled from the Setup page/CLI. Larger models need substantially more memory and
+disk than the default.
+
+The provider layer hides reasoning traces for Groq Qwen3 and GPT-OSS models and gives them a larger
+completion allowance. Qwen3 also runs with reasoning effort disabled for this structured authoring
+workflow. These are implementation defaults, not user-configurable switches.
+
+`eval/src/providers.py` contains a second display-name registry used by research/evaluation code.
+Names such as `groq-qwen3.6-27b` belong to that provider-level registry and are not valid values for
+the app's `TUTOR_AUTHOR_MODEL`; use the app names in the table above.
+
+## Network exposure and security
+
+Packaged shells bind the backend to `0.0.0.0:8077` so LAN hosting can be enabled without restarting
+the app. Setting `instructor_url` controls whether the network-facing class-server operations are
+actually enabled.
+
+| Surface | Default network behavior |
+| --- | --- |
+| Local UI and health endpoint | available on the bound address |
+| Student assignment fetch and attempt ingest | remote requests are accepted only while `instructor_url` is set |
+| Instructor routes (`/api/instructor/*`) | loopback-only and additionally protected by the author password when one is set |
+| Password set/clear routes | loopback-only |
+| Student grading/hints and setup routes | not covered by the instructor gate; do not expose a source server to an untrusted network without an external firewall or reverse-proxy policy |
+
+`RUNDIFF_ALLOW_REMOTE_ADMIN=1` removes the loopback restriction for instructor and password-change
+routes. Use it only when intentionally administering a headless backend from another machine, and
+set an author password first. It does not add TLS or rate limiting.
+
+The app permits cross-origin API requests. For internet-facing deployment, put it behind a reverse
+proxy that provides HTTPS, authentication/access controls appropriate to your environment, request
+limits, and a restricted firewall. The built-in LAN workflow is designed for a trusted classroom
+network, not direct public-internet exposure.
+
+For normal LAN setup and failure modes, see the
+[Network sync guide](webapp/network_sync_guide.md).
+
+## Build and development settings
+
+### Frontend
+
+- `bun run dev` in `webapp/frontend/` starts Vite on port `5180` and proxies `/api` to
+  `http://127.0.0.1:8077`.
+- `bun run build` writes `webapp/frontend/dist/`.
+- There are no frontend environment variables in the current app; API calls use same-origin
+  `/api/*` paths.
+
+### Backend sidecar
+
+From `webapp/desktop/`:
+
+```bash
+bun run build:backend
+```
+
+This invokes PyInstaller through `uv` and writes
+`webapp/backend/dist_backend/rundiff-backend/`. It is an `onedir` bundle: keep the executable and
+its `_internal` directory together. Build it on each target operating system and architecture.
+
+### Native macOS shell
+
+`webapp/desktop-macos/build.sh` consumes the frontend build and backend sidecar.
+
+| Setting | Default | Effect |
 | --- | --- | --- |
-| `HOST` (window + health checks) | `127.0.0.1` | The window always talks to loopback. |
-| `BIND_HOST` (sidecar bind) | `0.0.0.0` | So LAN devices can reach the class server when the instructor enables hosting. Nothing is advertised until `instructor_url` is set, and the admin API stays local-only (§6). |
-| `PORT` | `8077` | Fixed port for the window and sidecar. |
+| `ARCH` | `arm64` | Swift target architecture; `x86_64` is supported by the script for local Intel builds |
+| `VERSION` | `0.1.0` | bundle version and short version |
+| `--dmg` | off | also creates `release/Run·Diff.dmg` |
 
-Env the shells set on the spawned backend: `HOST=0.0.0.0`, `PORT=8077`, `TUTOR_DATA_DIR` (a
-per-user writable dir), and `TUTOR_FRONTEND_DIST` (the bundled `dist`). If a backend is already
-healthy on `:8077`, the shell reuses it and does **not** kill it on quit.
+The release workflow currently publishes macOS arm64 only.
 
----
+### Tauri Windows/Linux shell
 
-## 5. Model names (values for `TUTOR_HINT_MODEL` / `TUTOR_AUTHOR_MODEL`)
+Run `webapp/desktop-tauri/prep-resources.sh` after building the frontend and sidecar, then run
+`cargo tauri build` from `webapp/desktop-tauri/src-tauri/`. Configured bundle targets are MSI and
+NSIS on Windows, and DEB and AppImage on Linux. CI currently publishes Windows MSI/setup EXE and
+Linux AppImage artifacts.
 
-Friendly names resolve through `populator/model.py::REGISTRY`:
+Tauri requires Rust plus platform WebView/build dependencies. See its
+[platform README](webapp/desktop-tauri/README.md) for exact prerequisites.
 
-| Name | Provider | Model |
-| --- | --- | --- |
-| `groq` | Groq (cloud) | `qwen/qwen3.6-27b` *(default author model; reasoning — see below)* |
-| `groq-llama` | Groq (cloud) | `llama-3.3-70b-versatile` *(deprecated; kept as an alias for A/B comparison)* |
-| `gptoss` | Groq (cloud) | `openai/gpt-oss-120b` |
-| `qwen1.5b` | Ollama (local) | `qwen2.5-coder:1.5b` |
-| `qwen7b` | Ollama (local) | `qwen2.5-coder:7b` *(default hint model)* |
-| `qwen14b` | Ollama (local) | `qwen2.5-coder:14b` |
-| `qwen32b` | Ollama (local) | `qwen2.5-coder:32b` |
-| `qwen3coder` | Ollama (local) | `qwen3-coder:30b` |
+### Electron alternate shell
 
-A cloud name needs the matching API key (§2); a local name needs Ollama serving that tag (§1).
+`webapp/desktop/` supplies shared `build:frontend` and `build:backend` scripts and an alternate
+Electron shell. `bun run dev` starts the Electron development window. Its `electron-builder`
+configuration targets DMG and AppImage; `pack.mjs` is the alternate macOS packager described in the
+[Electron README](webapp/desktop/README.md). The primary release workflow uses Swift for macOS and
+Tauri for Windows/Linux.
 
-### Reasoning-model handling (Groq Qwen3)
+### Fixed desktop values
 
-The default cloud author model migrated off Groq's deprecated `llama-3.3-70b-versatile` to
-`qwen/qwen3.6-27b`. Qwen3 is a **reasoning** model, which the provider layer
-(`eval/src/providers.py`) handles with two adjustments — relevant if you point
-`TUTOR_AUTHOR_MODEL` at any Qwen3-class Groq model:
+All three desktop shells currently use:
 
-- **Strip the chain-of-thought.** The model emits an inline `<think>` block. The provider
-  sets `reasoning_format="hidden"` so this reasoning is dropped and does not pollute the
-  authored SQL.
-- **Avoid token starvation.** Reasoning tokens draw from the completion budget, so the
-  provider raises `max_completion_tokens` and, for Qwen3, sets `reasoning_effort="none"`.
-  Without this the model can spend its whole budget thinking and return empty output.
+- window/health address `127.0.0.1`;
+- backend bind address `0.0.0.0`;
+- port `8077`; and
+- a 30-second backend startup timeout.
 
-The old `groq-llama` alias is retained for A/B comparison and needs neither adjustment.
+Changing those requires modifying and rebuilding the shell; environment variables passed to an
+already packaged app are overwritten for host/port when it spawns its sidecar. If another healthy
+Run·Diff backend already answers on port `8077`, the shell reuses it and does not stop it when the
+window closes.
 
-### Hint model vs author model
+## Behavior that is not configurable
 
-These two are configured independently (see also §1 Notes). `TUTOR_HINT_MODEL` stays on the
-local `qwen2.5-coder:7b` via Ollama so student data never leaves the machine; only
-`TUTOR_AUTHOR_MODEL` moved to the cloud reasoning model, and authoring sees no student data.
-Changing one does not affect the other.
+The following are code defaults, not settings:
 
----
+- published sets use the grader's fixed seed list;
+- the adaptive hint plan is selected from the detected error family;
+- model-written hints are checked for executable-answer leakage and replaced by an offline hint if
+  necessary;
+- state-problem evidence redacts missing expected rows;
+- authoring validates on six initial seeds and stress-tests on 60 additional seeds;
+- class activity treats a student as “active now” for 120 seconds after their latest event; and
+- the live insights view polls on a fixed interval in the frontend.
 
-## 6. Network exposure & the admin gate
-
-When the backend binds to `0.0.0.0` (desktop default), endpoints fall into three tiers:
-
-- **Student/sync endpoints** (`/api/student/*`, `/api/sync/attempts`) — reachable on the LAN
-  *by design*, but the LAN-facing ones (`fetch-assignment`, attempt ingest, proxied
-  class-status) only answer when **hosting is on** (`instructor_url` set). Turning hosting off
-  makes the class server go dark to other devices.
-- **Instructor/admin endpoints** (`/api/instructor/*`, `/api/auth/set`, `/api/auth/clear`) —
-  **local-only by default.** They answer only requests from loopback (`127.0.0.1`/`::1`), since
-  the Author UI and the dev proxy are the only legitimate callers. This holds even with no
-  author password set, so a LAN peer cannot drive authoring/publishing/class management.
-  - Set `RUNDIFF_ALLOW_REMOTE_ADMIN=1` to allow the admin API from other devices — only for the
-    rare headless self-host where you drive the Author UI from another machine's browser. Pair
-    it with an author password.
-- **Author password** (`config.json` → `author_password_sha256`) — an additional gate on
-  `/api/instructor/*` regardless of origin; recommended on any shared machine.
-
-> The backend trusts proxy headers only from loopback (uvicorn default), so a remote peer cannot
-> spoof `X-Forwarded-For` to look local.
-
----
-
-## 7. Build-time configuration
-
-### Frontend (Vite)
-- Build: `bun run build` in `webapp/frontend/` (or `bun run build:frontend` from
-  `webapp/desktop/`) → `webapp/frontend/dist/`.
-- Dev server: port **5180**, proxies `/api/*` → `http://127.0.0.1:8077` (`vite.config.js`).
-
-### Backend sidecar (PyInstaller)
-- `bun run build:backend` from `webapp/desktop/`:
-  `pyinstaller rundiff_backend.spec --distpath dist_backend --workpath build_backend`
-  → `webapp/backend/dist_backend/rundiff-backend/`. Platform/arch-native; build on the target OS.
-
-### Electron packaging (Linux / cross)
-- `electron-builder` via `bun run dist` (`package.json` `build`): appId
-  `edu.sewanee.surf.rundiff`, targets **AppImage** (Linux) and **dmg** (mac). Bundles the
-  sidecar and `dist` as `extraResources`.
-- `pack.mjs` (`@electron/packager`) is an alternate macOS path (`darwin`/`arm64`) used where
-  electron-builder won't run.
-
-### macOS native shell (`webapp/desktop-macos/build.sh`)
-| Flag / env | Default | Effect |
-| --- | --- | --- |
-| `ARCH` (env) | `arm64` | Target CPU for the Swift shell. `ARCH=x86_64` builds Intel. |
-| `VERSION` (env) | `0.1.0` | `CFBundleVersion` / `CFBundleShortVersionString`. |
-| `--dmg` (arg) | off | Also emit a compressed LZMA `.dmg` installer. |
-
-Both desktop builds consume the same two ingredients first: the built frontend (`dist/`) and the
-PyInstaller sidecar (`dist_backend/rundiff-backend/`).
-
----
-
-## 8. Hint ladder behavior
-
-The hint ladder is **not** env-configurable; its ordering is data-driven by the grader. It is
-documented here because it determines what a given rung will and will not reveal. The grader
-classifies each wrong answer into an error-class family (from its own diff, with no model and
-no gold SQL) and the family fixes which of four primitives — `diff`, `socratic`, `conceptual`,
-`directive` — sits at L1/L2/L3. See `README.md` for the full family table; the
-configuration-relevant points:
-
-- **Deterministic rungs render client-side.** `diff` (and `db_error` for failed queries) need
-  no model call and cannot leak the gold answer. The model-written rungs are still produced by
-  `TUTOR_HINT_MODEL` (§1).
-- **The `structure` family is the locked default** for anything not confidently classified; it
-  never shows the raw diff and ends on a `directive`.
-- **Redaction on state-modification problems.** For CREATE/INSERT/UPDATE/DELETE the student is
-  shown counts of missing gold rows but never the gold rows themselves (only samples of their
-  own extra rows).
-- **Per-problem column-name enforcement.** A question may require its result column *names* to
-  match (not just the values). Instructors toggle it per question in the Author UI (it works for
-  questions inside a set too); the setting rides with the published question, and the grader
-  marks a query wrong until the headers match. Off by default and backward-compatible.
-
----
-
-## 9. Research / CLI tooling
-
-The offline research harness under `populator/` and `tutor/` (problem authoring, the grader,
-the leakage/efficacy evals, the model card) is **not** configured through `config.json` or the
-env vars in §1. It shares two things with the app and is otherwise driven by command-line flags:
-
-- **Models** resolve through the same registry in §5 (`populator/model.py::REGISTRY`) — the same
-  friendly names (`groq`, `qwen7b`, `qwen1.5b`, …) the app uses.
-- **Provider credentials/host** come from the same place as the app: `groq_api_key` (§2) for
-  Groq, `OLLAMA_HOST` (§1) for a non-default Ollama address.
-
-Entry points and their main flags (run with `--help` for the full set):
-
-| Tool | Purpose | Key flags |
-| --- | --- | --- |
-| `tutor/leakage_eval.py` | leakage suite (benign + injection) | `--model` |
-| `tutor/sim_student_eval.py` | hint-efficacy solve curve | `--tutor-model`, `--student-model`, `--by-family`, `--caps` |
-| `next-steps/run_model_card.py` | one-command scorecard per model | `--model`, `--role`, `--quick` |
-| `next-steps/freeze_fixtures.py` | re-freeze the eval fixtures | (none) |
-
-These run against frozen fixtures so scores stay comparable across model runs.
+Per-problem exact column-name enforcement is not an environment setting. Turn on **Require exact
+column names** while authoring/editing a SELECT problem, then republish the set.

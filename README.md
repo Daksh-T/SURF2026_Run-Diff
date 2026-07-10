@@ -1,197 +1,177 @@
-# Run·Diff — SURF SQL Tutor
+# Run·Diff — a local-first SQL tutor
 
-Run·Diff is a desktop SQL tutor. A student writes a SQL query against a practice problem;
-the backend **runs** the student's query and a hidden gold query against many
-randomly-generated datasets and **diffs** the result sets (hence *Run·Diff*). When they
-disagree, a local LLM gives a hint that points at the mistake without giving away the
-answer. Instructors author their own problems through an in-app authoring flow.
+Run·Diff is a desktop SQL practice and classroom app. It checks a student's SQL by running the
+student query and the instructor's expected query against multiple generated SQLite databases,
+then comparing the results. When an answer is wrong, the app provides an adaptive three-step hint
+ladder that points toward the problem without handing over a solution.
 
-## How it works
+The same app supports both roles:
 
+- **Students** join a classroom, work through one or more assigned sets, run queries or
+  data-changing statements, request hints, and sync or export their attempts.
+- **Instructors** author individual problems or multi-section assignments, publish student-safe
+  sets, run scheduled or live classroom sessions, and review class, problem, and student insights.
+
+For installation and day-to-day use, start with the [User guide](USER_GUIDE.md). For every setting,
+environment variable, model choice, data location, and build option, use the
+[Configuration reference](CONFIGURATION.md).
+
+## What the app includes
+
+- Result-based grading across multiple generated databases, including ordering and optional exact
+  result-column-name checks.
+- Final-state grading for `CREATE`, `INSERT`, `UPDATE`, `DELETE`, and `DROP` problems, including
+  tables, rows, constraints, generated columns, views, indexes, and triggers.
+- An error-adaptive hint ladder using deterministic evidence and local model-written questions or
+  nudges. If Ollama or the model is unavailable, safe built-in hints keep practice usable.
+- Single-problem and whole-assignment authoring, generated-data stress testing, edge-case
+  confirmations, previews, and optional difficulty prediction.
+- Published, student-safe bundles that contain baked expected results but never the instructor's
+  gold SQL.
+- Classrooms with multiple sets, open/roster/personal-passcode entry, optional schedules,
+  archive/reactivate controls, and live pause/end/reopen controls.
+- Offline assignment and attempt files, plus optional live synchronization over a LAN.
+- Insights by class, set, problem, and student; live activity; predicted-versus-actual difficulty;
+  and CSV export.
+- Native macOS packaging and lean Tauri packages for Windows and Linux. An Electron shell remains
+  available as an alternate development and packaging path.
+
+## How Run·Diff works
+
+```text
+Desktop shell or browser
+        │ HTTP on localhost:8077
+        ▼
+FastAPI backend ───── serves the built React app
+        │
+        ├── SQLite grading: generated databases + baked expected results
+        ├── Ollama: optional local student-hint model
+        └── Groq: default instructor-authoring model
 ```
-┌─────────────────────────────┐         ┌──────────────────────────────┐
-│  Desktop shell              │  HTTP   │  FastAPI backend (:8077)     │
-│  • macOS: Swift WKWebView   │ ──────► │  • grades by running + diff  │
-│  • Linux: Electron          │         │  • serves the built frontend │
-│  (spawns + supervises the   │         │  • instructor authoring flow │
-│   backend, opens a window)  │         └──────────────┬───────────────┘
-└─────────────────────────────┘                        │
-                                       ┌────────────────┴───────────────┐
-                                       │  Ollama (local)  → student hints│
-                                       │  Groq (cloud)    → authoring    │
-                                       └─────────────────────────────────┘
-```
 
-- **Backend** (`webapp/backend`) — FastAPI. The grading core, tutor harness, and data
-  populator live in the sibling `tutor/`, `populator/`, and `eval/src/` trees and are wired
-  onto `sys.path` at import time, so the repo layout must be preserved.
-- **Frontend** (`webapp/frontend`) — React + Vite, with a CodeMirror SQL editor. Built to
-  static assets that the backend serves.
-- **Desktop shells** — `webapp/desktop-macos` (native Swift `WKWebView`) for macOS and
-  `webapp/desktop` (Electron) for Linux. Both bundle the backend as a self-contained
-  PyInstaller sidecar plus the built frontend.
+The React frontend never grades SQL itself. The FastAPI backend owns grading, authoring, classes,
+attempt logs, publishing, and synchronization. Packaged desktop shells start that backend as a
+PyInstaller sidecar and open the app at `http://127.0.0.1:8077`.
 
-### Repo layout
+### Privacy and content boundaries
 
-```
+- Student grading is local. Student SQL is sent only to the backend running on that student's
+  machine, unless an attempt is synchronized to the instructor as part of the classroom log.
+- Student hints use Ollama by default. They fall back to built-in templates when the local model
+  cannot be reached.
+- Default authoring uses Groq and therefore requires internet access and a Groq API key. Authoring
+  sends instructor-authored prompts, schemas, and expected SQL—not student attempts.
+- Private source sets live separately from published bundles. Publishing bakes expected results
+  and verifies that no `gold_sql` field enters the student bundle.
+- When class hosting is enabled, student sync endpoints are reachable on the network. Instructor
+  endpoints remain loopback-only unless remote administration is explicitly enabled.
+
+Exported assignment files are sealed against casual reading, not cryptographically protected
+against a determined recipient. They do not contain gold SQL, but they necessarily contain the
+baked results used for local grading. Prefer a live class server for higher-stakes use.
+
+## Repository layout
+
+```text
 webapp/
-  backend/        FastAPI app + PyInstaller spec (rundiff_backend.spec)
-  frontend/       React + Vite app
-  desktop-macos/  Swift WKWebView shell + build.sh         (macOS builds)
-  desktop/        Electron shell + electron-builder config (Linux builds)
-  branding/       app icons
-tutor/            grading core, tutor harness          (imported by the backend)
-populator/        dataset generator                    (imported by the backend)
-eval/src/         LLM provider layer (Groq + Ollama)    (imported by the backend)
+  backend/          FastAPI API, persistence, grading bridge, authoring, publishing
+  frontend/         React + Vite interface
+  desktop-macos/    native Swift/WKWebView shell for macOS
+  desktop-tauri/    Tauri shell for Windows and Linux
+  desktop/          alternate Electron shell and shared build scripts
+  branding/         icons and branding assets
+  network_sync_guide.md
+tutor/              result grading, hint generation, and evaluation harnesses
+populator/          generated-dataset authoring and model registry
+eval/src/           Groq, Gemini, and Ollama provider layer
 ```
 
-## Hint ladder
+The backend imports the sibling `tutor/`, `populator/`, and `eval/src/` trees. Preserve the
+repository layout when running from source.
 
-When the student's query disagrees with the gold result, the tutor offers up to three rungs
-of escalating help. The 2026 redesign replaced the old fixed ladder (L1 conceptual nudge →
-L2 name-the-clause → L3 query skeleton) with an **error-class-adaptive** ladder built from
-four primitives, ordered by the kind of mistake the grader detects.
+## Run from source
 
-The four primitives:
+Prerequisites:
 
-- **diff** — the deterministic result-set difference, rendered. No model call; computed
-  client-side, so it cannot leak the gold answer.
-- **socratic** — a single pointed question that prompts the student to locate the error
-  themselves.
-- **conceptual** — a one-sentence nudge naming the *kind* of mistake. No SQL, no clause
-  keyword.
-- **directive** — names the specific clause/operation and the nature of the fix, in prose.
-  No runnable SQL.
+- [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer
+- [Bun](https://bun.sh/)
+- Optional: [Ollama](https://ollama.com/) for model-written student hints
+- Optional: a Groq API key for instructor authoring
 
-(A fifth rung, **db_error**, surfaces the database error message when the query failed to run.)
-
-The grader classifies the mistake into a **family** purely from its own diff — no model and
-no gold SQL involved — and each family fixes which primitive sits at L1/L2/L3:
-
-| Family | Trigger | L1 | L2 | L3 |
-| --- | --- | --- | --- | --- |
-| membership | wrong rows included/excluded (boundary, off-by-one, dropped predicate) | diff | socratic | conceptual |
-| ordering | right rows, wrong order | diff (as "wrong order") | socratic | conceptual |
-| structure | wrong aggregate/join/grouping/projection, or column-count mismatch | socratic | conceptual | directive |
-| error | the query didn't run | db_error | conceptual | directive |
-
-Anything not confidently classified routes to `structure`, the locked default. The
-membership-vs-structure split is a heuristic: if differing rows pair up on a key column but
-differ on a computed column, it is `structure` (recomputed values); whole rows added or
-removed is `membership`. The `structure` family deliberately never shows the raw diff and
-ends on the directive. State-modification problems (CREATE/INSERT/UPDATE/DELETE) use a
-parallel taxonomy — `error`, `no_effect`, `schema`, `rows` — and honor a redaction rule: the
-student sees counts of missing gold rows but never the gold rows themselves, only samples of
-their own extra rows; the `rows` family is the one place the diff is partially blinded, so it
-ends on a directive.
-
-State grading compares more than table names, columns, and rows. Required `UNIQUE`,
-`FOREIGN KEY`, and `CHECK` constraints are normalized separately; generated columns retain
-their normalized expression and `VIRTUAL`/`STORED` mode; and views, explicit indexes, and
-triggers are compared as normalized schema objects. These differences also appear in the
-deterministic schema evidence shown to the student.
-
-The old query-skeleton rung — the one rung that could leak the answer's shape — is retired.
-The deterministic rungs (`diff`, `db_error`) need no model call and render client-side, so
-they cannot leak.
-
-Instructors can optionally enforce output **column names** per question (see CONFIGURATION.md):
-a question with column-name enforcement on grades a query wrong until its result headers match
-the required names, and the diff calls out the mismatch.
-
-## Prerequisites
-
-- **[uv](https://docs.astral.sh/uv/)** — Python toolchain (backend targets Python ≥ 3.11).
-- **[Bun](https://bun.sh/)** — installs and builds the frontend.
-- **[Ollama](https://ollama.com/)** *(student hints)* — serves the local hint model
-  `qwen2.5-coder:7b`. The app can pull it on first run, or `ollama pull qwen2.5-coder:7b`.
-- **Groq API key** *(instructor authoring only)* — put it in the repo-root `.env` as
-  `groq_api_key=...` (or export it as an environment variable). Not needed to run, grade, or
-  take problems. See `CONFIGURATION.md` for all configuration.
-
-macOS desktop builds also need the **Xcode Command Line Tools** (`xcode-select --install`)
-for `swiftc`. Linux desktop builds need **Node.js** (electron-builder runs under Node).
-
-## Running in development
-
-Two terminals — backend on `:8077`, frontend dev server on `:5180` (proxies `/api` to the backend):
+Run the backend and frontend in separate terminals:
 
 ```bash
-# 1) backend
 cd webapp/backend
 uv sync
 uv run uvicorn app:app --host 127.0.0.1 --port 8077
-
-# 2) frontend
-cd webapp/frontend
-bun install
-bun run dev          # open http://127.0.0.1:5180
 ```
 
-To run the whole desktop shell in dev (Electron spawns the backend for you):
-
 ```bash
-cd webapp/desktop
+cd webapp/frontend
 bun install
 bun run dev
 ```
 
-## Building the desktop app
+Open `http://127.0.0.1:5180`. Vite proxies `/api` requests to the backend on port `8077`.
 
-Prebuilt installers for each platform are attached to the
-[Releases](../../releases) page. To build locally:
+To serve a production-style frontend from the backend instead:
 
-Every build first produces the same two ingredients, then wraps them in a platform shell:
+```bash
+cd webapp/frontend
+bun install
+bun run build
 
-| Ingredient | Command (from `webapp/desktop`) | Output |
+cd ../backend
+uv sync
+uv run python run_server.py
+```
+
+Then open `http://127.0.0.1:8077`.
+
+The default authoring provider needs `groq_api_key` in a repo-root `.env` file or in the process
+environment. Student practice, grading, and offline hints do not need that key. See
+[Configuration](CONFIGURATION.md#api-keys-and-env) for an exact example.
+
+## Validate a change
+
+```bash
+cd webapp/backend
+uv sync
+uv run python -m unittest
+
+cd ../frontend
+bun install
+bun run build
+```
+
+The backend test suite exercises grading and state-comparison behavior. A production frontend
+build catches JSX, import, and bundling failures.
+
+## Desktop builds
+
+Release automation builds:
+
+| Platform | Primary shell | Output |
 | --- | --- | --- |
-| Built frontend | `bun run build:frontend` | `webapp/frontend/dist/` |
-| Backend sidecar (PyInstaller) | `bun run build:backend` | `webapp/backend/dist_backend/rundiff-backend/` |
+| macOS arm64 | Swift + WKWebView | `.dmg` |
+| Windows x86-64 | Tauri + WebView2 | `.msi` and setup `.exe` |
+| Linux x86-64 | Tauri + WebKitGTK | `.AppImage` |
 
-The PyInstaller sidecar is platform- and arch-native and cannot be cross-compiled — build
-each target on its own OS/arch.
+All desktop targets bundle the same built frontend and platform-native PyInstaller backend. The
+sidecar cannot be cross-compiled, so build it on the target operating system. Platform-specific
+instructions live in [desktop-macos/README.md](webapp/desktop-macos/README.md),
+[desktop-tauri/README.md](webapp/desktop-tauri/README.md), and
+[desktop/README.md](webapp/desktop/README.md). Build flags and output paths are summarized in the
+[Configuration reference](CONFIGURATION.md#build-and-development-settings).
 
-### macOS (`.app` + `.dmg`, native WKWebView)
+## Documentation map
 
-```bash
-cd webapp/desktop && bun install
-bun run build:frontend
-bun run build:backend
-cd ../desktop-macos
-ARCH=arm64 ./build.sh --dmg     # or ARCH=x86_64 for an Intel build
-# → webapp/desktop-macos/release/Run·Diff.app and Run·Diff.dmg
-```
-
-Builds are unsigned. On first launch, right-click the app → *Open*, or
-`xattr -dr com.apple.quarantine "Run·Diff.app"`.
-
-### Linux (`AppImage`, Electron)
-
-```bash
-cd webapp/desktop && npm install      # electron-builder runs under Node, not Bun
-npm run build:frontend
-npm run build:backend
-npm run dist                          # → webapp/desktop/release/*.AppImage
-```
-
-## Authoring problems
-
-The app ships with no built-in problems — instructors create their own:
-
-1. Open the app and go to the instructor authoring view.
-2. Set the author password on first use.
-3. Create a set, then add problems — a prompt plus a gold SQL query. The populator
-   generates varied datasets and verifies the gold query exercises the intended clauses.
-4. Publish the set; students select it from the practice view.
-
-Authored content lives under `webapp/data/` and uses the Groq-backed authoring flow
-(`groq_api_key` in the repo-root `.env`, or exported as an environment variable).
-
-## Configuration
-
-For a full configuration rundown — environment variables, persisted per-install settings, the
-model registry, network exposure and the admin gate, and the hint-ladder behavior — see
-[CONFIGURATION.md](CONFIGURATION.md).
+| Document | Use it for |
+| --- | --- |
+| [User guide](USER_GUIDE.md) | installation, first run, student practice, authoring, classrooms, sync, insights, and troubleshooting |
+| [Configuration reference](CONFIGURATION.md) | environment variables, API keys, persistent settings, data files, models, networking, and build options |
+| [Network sync guide](webapp/network_sync_guide.md) | a focused LAN and offline-file deployment walkthrough |
+| Platform READMEs | building and packaging a specific desktop shell |
 
 ## License
 
