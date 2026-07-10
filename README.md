@@ -85,6 +85,12 @@ student sees counts of missing gold rows but never the gold rows themselves, onl
 their own extra rows; the `rows` family is the one place the diff is partially blinded, so it
 ends on a directive.
 
+State grading compares more than table names, columns, and rows. Required `UNIQUE`,
+`FOREIGN KEY`, and `CHECK` constraints are normalized separately; generated columns retain
+their normalized expression and `VIRTUAL`/`STORED` mode; and views, explicit indexes, and
+triggers are compared as normalized schema objects. These differences also appear in the
+deterministic schema evidence shown to the student.
+
 The old query-skeleton rung — the one rung that could leak the answer's shape — is retired.
 The deterministic rungs (`diff`, `db_error`) need no model call and render client-side, so
 they cannot leak.
