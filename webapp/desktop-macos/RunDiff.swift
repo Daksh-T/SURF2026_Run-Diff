@@ -179,6 +179,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
     }
 
+    // MARK: - JavaScript dialogs
+
+    // WKWebView does not present window.alert/window.confirm by itself. The authoring UI uses
+    // confirm for destructive classroom, set, problem, student, and attempt actions, so without
+    // these delegate methods every delete click appears to do nothing in the native macOS app.
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window) { _ in completionHandler() }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            completionHandler(response == .alertFirstButtonReturn)
+        }
+    }
+
     // MARK: - Downloads (exports: <a download> on blob: URLs and backend CSV/JSON endpoints)
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,

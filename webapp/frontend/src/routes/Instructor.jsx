@@ -7,7 +7,9 @@ import { DataTable, Schema } from "../components/bits.jsx";
 // generator. The instructor previews it, adds it to a set, and publishes — at which point the
 // gold query is baked into per-seed results and never shipped to students.
 
-const EMPTY_ITEM = () => ({ title: "", prompt: "", gold_sql: "", difficulty: "medium" });
+const EMPTY_ITEM = () => ({
+  title: "", prompt: "", gold_sql: "", difficulty: "medium", enforce_column_names: false,
+});
 const EMPTY_SECTION = () => ({ tableHint: "", items: [EMPTY_ITEM()] });
 
 export default function Instructor() {
@@ -31,6 +33,7 @@ export default function Instructor() {
   const [prompt, setPrompt] = useState("");
   const [gold, setGold] = useState("");
   const [difficulty, setDifficulty] = useState("medium");
+  const [enforceColumnNames, setEnforceColumnNames] = useState(false);
   const [predict, setPredict] = useState(false); // run the simulated weak student after authoring
 
   const [job, setJob] = useState(null); // {state, result}
@@ -78,7 +81,9 @@ export default function Instructor() {
     setBanner(null);
     setAuthored(null);
     setJob({ state: "running" });
-    const payload = { prompt, gold_sql: gold, title, difficulty };
+    const payload = {
+      prompt, gold_sql: gold, title, difficulty, enforce_column_names: enforceColumnNames,
+    };
     if (confirmedNudges?.length) payload.confirmed_nudges = confirmedNudges;
     if (ddl) payload.ddl = ddl;
     if (predict) payload.predict = true;
@@ -109,7 +114,8 @@ export default function Instructor() {
   async function addToSetSingle() {
     await addToSet(authored.problem);
     setAuthored(null);
-    setTitle(""); setPrompt(""); setGold(""); setJob(null);
+    setTitle(""); setPrompt(""); setGold(""); setDifficulty("medium");
+    setEnforceColumnNames(false); setJob(null);
   }
 
   // ---- assignment (batch) form helpers — sections each have their own hint + questions ----
@@ -178,7 +184,14 @@ export default function Instructor() {
         ? { ...sec, items: sec.items.map((r, k) => (k === i ? { status: "running" } : r)) }
         : sec)),
     }));
-    const payload = { prompt: it.prompt, gold_sql: it.gold_sql, title: it.title, difficulty: it.difficulty, ddl };
+    const payload = {
+      prompt: it.prompt,
+      gold_sql: it.gold_sql,
+      title: it.title,
+      difficulty: it.difficulty,
+      enforce_column_names: !!it.enforce_column_names,
+      ddl,
+    };
     if (confirmedNudges?.length) payload.confirmed_nudges = confirmedNudges;
     const { job_id } = await api.author(payload);
     const id = setInterval(async () => {
@@ -423,6 +436,12 @@ export default function Instructor() {
                     <option value="hard">Hard</option>
                   </select>
                 </div>
+                <label className="field enforce-cols-toggle">
+                  <input type="checkbox" checked={enforceColumnNames} onChange={(e) => setEnforceColumnNames(e.target.checked)} />
+                  <span>
+                    Force label match <span className="hint-line">— require the student's result column names to match the answer (including <code className="inline-code">AS</code> aliases)</span>
+                  </span>
+                </label>
                 <label className="field" style={{ display: "flex", gap: 8, alignItems: "baseline", cursor: "pointer" }}>
                   <input type="checkbox" checked={predict} onChange={(e) => setPredict(e.target.checked)} />
                   <span style={{ fontSize: 13.5 }}>
@@ -507,6 +526,16 @@ export default function Instructor() {
                           <option value="hard">Hard</option>
                         </select>
                       </div>
+                      <label className="field enforce-cols-toggle">
+                        <input
+                          type="checkbox"
+                          checked={!!it.enforce_column_names}
+                          onChange={(e) => updateItem(s, i, "enforce_column_names", e.target.checked)}
+                        />
+                        <span>
+                          Force label match <span className="hint-line">— require exact result column names</span>
+                        </span>
+                      </label>
                     </div>
                   ))}
 

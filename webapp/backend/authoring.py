@@ -444,6 +444,9 @@ def author_batch_sections(sections: list[dict], model_name: str,
                 on_progress(done, total, it["title"])
             res = author(it["prompt"], it["gold_sql"], model_name, it["title"],
                           it.get("difficulty", "medium"), confirmed_nudges=None, ddl=ddl)
+            if res.get("status") == "ok" and res.get("kind") != "state":
+                res["problem"]["enforce_column_names"] = bool(
+                    it.get("enforce_column_names", False))
             results.append(res)
             done += 1
 

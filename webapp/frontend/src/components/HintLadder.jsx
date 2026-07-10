@@ -91,6 +91,43 @@ function StateEvidence({ diff }) {
     }
   }
 
+  if (diff.constraint_diffs) {
+    for (const [table, cd] of Object.entries(diff.constraint_diffs)) {
+      const parts = [];
+      for (const cols of cd.missing_unique || []) {
+        parts.push(`missing required UNIQUE constraint on (${cols.join(", ")})`);
+      }
+      for (const cols of cd.extra_unique || []) {
+        parts.push(`unexpected UNIQUE constraint on (${cols.join(", ")})`);
+      }
+      if (cd.missing_foreign_keys?.length > 0) parts.push(`missing ${cd.missing_foreign_keys.length} required FOREIGN KEY constraint${cd.missing_foreign_keys.length > 1 ? "s" : ""}`);
+      if (cd.extra_foreign_keys?.length > 0) parts.push(`${cd.extra_foreign_keys.length} unexpected FOREIGN KEY constraint${cd.extra_foreign_keys.length > 1 ? "s" : ""}`);
+      if (cd.missing_checks?.length > 0) parts.push(`missing ${cd.missing_checks.length} required CHECK constraint${cd.missing_checks.length > 1 ? "s" : ""}`);
+      if (cd.extra_checks?.length > 0) parts.push(`${cd.extra_checks.length} unexpected CHECK constraint${cd.extra_checks.length > 1 ? "s" : ""}`);
+      if (cd.missing_generated?.length > 0) parts.push(`generated column${cd.missing_generated.length > 1 ? "s" : ""} ${cd.missing_generated.map((x) => x.name).join(", ")} missing or using the wrong expression/storage mode`);
+      if (cd.extra_generated?.length > 0) parts.push(`unexpected generated column definition${cd.extra_generated.length > 1 ? "s" : ""} for ${cd.extra_generated.map((x) => x.name).join(", ")}`);
+      if (parts.length > 0) {
+        rows.push(
+          <div className="diff-line" key={"constraint-" + table}>
+            <code className="inline-code">{table}</code>: {parts.join(" · ")}
+          </div>
+        );
+      }
+    }
+  }
+
+  if (diff.object_diffs) {
+    for (const obj of diff.object_diffs.missing || []) {
+      rows.push(<div className="diff-line" key={`missing-object-${obj.type}-${obj.name}`}>Missing required {obj.type.toUpperCase()} <code className="inline-code">{obj.name}</code></div>);
+    }
+    for (const obj of diff.object_diffs.extra || []) {
+      rows.push(<div className="diff-line" key={`extra-object-${obj.type}-${obj.name}`}>Unexpected {obj.type.toUpperCase()} <code className="inline-code">{obj.name}</code></div>);
+    }
+    for (const obj of diff.object_diffs.changed || []) {
+      rows.push(<div className="diff-line" key={`changed-object-${obj.type}-${obj.name}`}>{obj.type.toUpperCase()} <code className="inline-code">{obj.name}</code> has the wrong definition</div>);
+    }
+  }
+
   if (diff.row_diffs) {
     for (const [table, rd] of Object.entries(diff.row_diffs)) {
       rows.push(

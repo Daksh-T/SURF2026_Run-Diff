@@ -127,6 +127,264 @@ def _canon_cell(v):
     return v
 
 
+def _quote_ident(name: str) -> str:
+    """Quote an SQLite identifier for PRAGMA/table reads."""
+    return '"' + (name or "").replace('"', '""') + '"'
+
+
+def _canonical_sql_expr(sql: str) -> str:
+    """Normalize a constraint expression without making sqlglot a correctness dependency."""
+    text = (sql or "").strip()
+    try:
+        node = sqlglot.parse_one(text, read="sqlite")
+        # SQLite identifiers are case-insensitive, but string literals are not. Lower only the
+        # former; lowercasing the rendered SQL would incorrectly equate CHECK(code='A')/'a'.
+        for ident in node.find_all(exp.Identifier):
+            ident.set("this", ident.this.lower())
+        return node.sql(dialect="sqlite")
+    except Exception:
+        return re.sub(r"\s+", " ", text)
+
+
+def _canonical_schema_sql(sql: str) -> str:
+    """Normalize a stored VIEW/INDEX/TRIGGER definition, preserving string literal case."""
+    text = (sql or "").strip()
+    try:
+        if re.match(r"(?is)^CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b", text):
+            raise ValueError("SQLite trigger grammar uses the lightweight fallback")
+        node = sqlglot.parse_one(text, read="sqlite")
+        for ident in node.find_all(exp.Identifier):
+            ident.set("this", ident.this.lower())
+        return node.sql(dialect="sqlite")
+    except Exception:
+        # sqlglot does not fully parse SQLite triggers. Lowercase SQL outside single-quoted
+        # literals and collapse layout so harmless keyword/identifier case and whitespace differ.
+        chunks, buf, quote, i = [], [], None, 0
+        while i < len(text):
+            ch = text[i]
+            if quote:
+                buf.append(ch)
+                if ch == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        buf.append(text[i + 1]); i += 1
+                    else:
+                        chunks.append("".join(buf)); buf = []; quote = None
+            elif ch == "'":
+                if buf:
+                    chunks.append("".join(buf).lower()); buf = []
+                quote = ch; buf.append(ch)
+            else:
+                buf.append(ch)
+            i += 1
+        if buf:
+            chunks.append("".join(buf) if quote else "".join(buf).lower())
+        return re.sub(r"\s+", " ", "".join(chunks)).strip()
+
+
+def _schema_objects(conn: sqlite3.Connection) -> list[dict]:
+    """Normalized non-table schema objects that affect DDL correctness or behavior."""
+    rows = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('view','index','trigger') "
+        "AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"
+    ).fetchall()
+    objects = [{
+        "type": str(kind).lower(), "name": str(name).lower(),
+        "table": str(table).lower(), "sql": _canonical_schema_sql(sql),
+    } for kind, name, table, sql in rows]
+    return sorted(objects, key=lambda x: (x["type"], x["name"]))
+
+
+def _check_constraints(create_sql: str) -> list[str]:
+    """Extract balanced CHECK(...) bodies from SQLite's stored CREATE statement.
+
+    SQLite has PRAGMAs for UNIQUE and foreign keys but none for CHECK constraints.  The
+    sqlite_master SQL is authoritative, so scan it while respecting quoted strings and nested
+    parentheses, then canonicalize each expression.  Constraint names and formatting are
+    deliberately ignored.
+    """
+    sql = create_sql or ""
+    # Keep character offsets but hide quoted strings/identifiers, so a default such as
+    # DEFAULT 'CHECK(nope)' cannot be mistaken for a table constraint.
+    masked = list(sql)
+    quote = None
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if quote:
+            masked[i] = " "
+            if ch == quote:
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    masked[i + 1] = " "
+                    i += 1
+                else:
+                    quote = None
+        elif ch in ("'", '"', "`"):
+            quote = ch
+            masked[i] = " "
+        elif ch == "[":
+            quote = "]"
+            masked[i] = " "
+        i += 1
+    out: list[str] = []
+    for match in re.finditer(r"\bCHECK\s*\(", "".join(masked), re.I):
+        start = match.end()
+        depth = 1
+        quote = None
+        i = start
+        while i < len(sql) and depth:
+            ch = sql[i]
+            if quote:
+                if ch == quote:
+                    if i + 1 < len(sql) and sql[i + 1] == quote:
+                        i += 1
+                    else:
+                        quote = None
+            elif ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "[":
+                quote = "]"
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            out.append(_canonical_sql_expr(sql[start:i - 1]))
+    return sorted(set(out))
+
+
+def _split_create_definitions(create_sql: str) -> list[str]:
+    """Split the outer CREATE TABLE (...) body on top-level commas.
+
+    This intentionally handles only the small piece SQLite does not expose via PRAGMA:
+    generated-column expressions. It is quote/parenthesis aware but is not a general SQL parser.
+    """
+    sql = create_sql or ""
+    start = sql.find("(")
+    if start < 0:
+        return []
+    parts, part_start, depth, quote = [], start + 1, 1, None
+    i = start + 1
+    while i < len(sql) and depth:
+        ch = sql[i]
+        if quote:
+            if ch == quote:
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    i += 1
+                else:
+                    quote = None
+        elif ch in ("'", '"', "`"):
+            quote = ch
+        elif ch == "[":
+            quote = "]"
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                parts.append(sql[part_start:i].strip())
+                break
+        elif ch == "," and depth == 1:
+            parts.append(sql[part_start:i].strip())
+            part_start = i + 1
+        i += 1
+    return [p for p in parts if p]
+
+
+def _leading_identifier(definition: str) -> str | None:
+    text = (definition or "").lstrip()
+    if not text:
+        return None
+    if text[0] in ('"', "'", "`", "["):
+        close = "]" if text[0] == "[" else text[0]
+        end = text.find(close, 1)
+        return text[1:end].lower() if end > 0 else None
+    m = re.match(r"([^\s(,]+)", text)
+    return m.group(1).lower() if m else None
+
+
+def _generated_columns(create_sql: str, generated_modes: dict[str, str]) -> list[dict]:
+    """Extract expressions only for columns SQLite marks generated in PRAGMA table_xinfo."""
+    definitions = {_leading_identifier(d): d for d in _split_create_definitions(create_sql)}
+    out = []
+    for name, storage in sorted(generated_modes.items()):
+        definition = definitions.get(name, "")
+        match = re.search(r"\b(?:GENERATED\s+ALWAYS\s+)?AS\s*\(", definition, re.I)
+        if not match:
+            # This should not happen for a table_xinfo-generated column. Keep a visible sentinel
+            # so two unparsed generated definitions do not silently equal an ordinary column.
+            expression = "<unparsed>"
+        else:
+            start, depth, quote, i = match.end(), 1, None, match.end()
+            while i < len(definition) and depth:
+                ch = definition[i]
+                if quote:
+                    if ch == quote:
+                        if i + 1 < len(definition) and definition[i + 1] == quote:
+                            i += 1
+                        else:
+                            quote = None
+                elif ch in ("'", '"', "`"):
+                    quote = ch
+                elif ch == "[":
+                    quote = "]"
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                i += 1
+            expression = (_canonical_sql_expr(definition[start:i - 1])
+                          if depth == 0 else "<unparsed>")
+        out.append({"name": name, "expression": expression, "storage": storage})
+    return out
+
+
+def _table_constraints(conn: sqlite3.Connection, table: str, create_sql: str,
+                       generated_modes: dict[str, str] | None = None) -> dict:
+    """Return normalized constraints omitted by PRAGMA table_info.
+
+    UNIQUE column order is ignored because UNIQUE(a,b) and UNIQUE(b,a) enforce the same row
+    invariant. Foreign-key column order is retained because it defines the source/target mapping.
+    """
+    qtable = _quote_ident(table)
+    unique: set[tuple[str, ...]] = set()
+    for row in conn.execute(f"PRAGMA index_list({qtable})").fetchall():
+        # (seq, name, unique, origin, partial); origin='pk' is represented by column pk ordinals.
+        if not row[2] or (len(row) > 3 and row[3] == "pk"):
+            continue
+        index_name = row[1]
+        cols = []
+        for ir in conn.execute(f"PRAGMA index_info({_quote_ident(index_name)})").fetchall():
+            if ir[2] is not None:
+                cols.append(str(ir[2]).lower())
+        if cols:
+            unique.add(tuple(sorted(cols)))
+
+    fk_groups: dict[int, list[tuple]] = {}
+    for row in conn.execute(f"PRAGMA foreign_key_list({qtable})").fetchall():
+        # (id, seq, table, from, to, on_update, on_delete, match)
+        fk_groups.setdefault(int(row[0]), []).append(row)
+    foreign_keys = []
+    for rows in fk_groups.values():
+        rows.sort(key=lambda r: int(r[1]))
+        foreign_keys.append({
+            "from": [str(r[3]).lower() for r in rows],
+            "table": str(rows[0][2]).lower(),
+            "to": [str(r[4]).lower() if r[4] is not None else None for r in rows],
+            "on_update": str(rows[0][5]).upper(),
+            "on_delete": str(rows[0][6]).upper(),
+            "match": str(rows[0][7]).upper(),
+        })
+    foreign_keys.sort(key=lambda fk: json.dumps(fk, sort_keys=True))
+    return {
+        "unique": [list(cols) for cols in sorted(unique)],
+        "foreign_keys": foreign_keys,
+        "checks": _check_constraints(create_sql),
+        "generated": _generated_columns(create_sql, generated_modes or {}),
+    }
+
+
 def snapshot_state(conn: sqlite3.Connection) -> dict:
     """A normalized, JSON-serialisable picture of the whole DB state, built so that two states
     compare equal under the semantics the spec locks:
@@ -138,14 +396,22 @@ def snapshot_state(conn: sqlite3.Connection) -> dict:
       * rows within a table are sorted by their JSON text (a multiset compared as a sorted list).
 
     Internal `sqlite_%` tables are skipped. The per-column tuple is
-    [name_lower, affinity, notnull(0/1), pk(0/1), dflt(str|None)] in DECLARATION order (kept for
-    display/diffing; equality uses the set of these tuples)."""
-    out: dict = {"tables": {}}
-    table_names = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ).fetchall()]
-    for tname in table_names:
+    [name_lower, affinity, notnull(0/1), pk_position, dflt(str|None)] in DECLARATION order (kept for
+    display/diffing; equality uses the set of these tuples). Schema snapshot v2 additionally
+    records UNIQUE, FOREIGN KEY, CHECK, and generated-column definitions. `pk` is its ordered
+    PK position, not a boolean, so composite primary keys are represented faithfully."""
+    out: dict = {"snapshot_version": 2, "tables": {}, "objects": _schema_objects(conn)}
+    table_rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for tname, create_sql in table_rows:
         info = conn.execute(f'PRAGMA table_info("{tname}")').fetchall()
+        xinfo = conn.execute(f'PRAGMA table_xinfo({_quote_ident(tname)})').fetchall()
+        generated_modes = {
+            str(row[1]).lower(): ("virtual" if int(row[6]) == 2 else "stored")
+            for row in xinfo if len(row) > 6 and int(row[6]) in (2, 3)
+        }
         # info row: (cid, name, type, notnull, dflt_value, pk)
         columns = []
         col_names = []
@@ -153,12 +419,12 @@ def snapshot_state(conn: sqlite3.Connection) -> dict:
             nm = (name or "").lower()
             col_names.append(name)
             columns.append([nm, _affinity(decl), int(notnull or 0),
-                            1 if pk else 0, None if dflt is None else str(dflt)])
+                            int(pk or 0), None if dflt is None else str(dflt)])
         # canonicalize rows: project columns in ALPHABETICAL name order, round floats
         alpha_idx = sorted(range(len(col_names)), key=lambda i: (col_names[i] or "").lower())
-        col_list = ", ".join('"' + c + '"' for c in col_names)
+        col_list = ", ".join(_quote_ident(c) for c in col_names)
         raw_rows = conn.execute(
-            f'SELECT {col_list} FROM "{tname}"'
+            f'SELECT {col_list} FROM {_quote_ident(tname)}'
         ).fetchall() if col_names else []
         canon_rows = []
         for r in raw_rows:
@@ -166,19 +432,27 @@ def snapshot_state(conn: sqlite3.Connection) -> dict:
         canon_rows.sort(key=lambda row: json.dumps(row, default=str, sort_keys=True))
         out["tables"][tname.lower()] = {
             "columns": columns,
+            "constraints": _table_constraints(
+                conn, tname, create_sql or "", generated_modes),
             "rows": canon_rows,
             "n_rows": len(canon_rows),
         }
     return out
 
 
-def _col_set(table_snap: dict) -> set:
+def _col_set(table_snap: dict, ordered_pk: bool = True) -> set:
     """The set of column tuples for set-equality comparison (declaration order ignored)."""
-    return {tuple(c) for c in table_snap["columns"]}
+    if ordered_pk:
+        return {tuple(c) for c in table_snap["columns"]}
+    return {tuple(c[:3] + [1 if c[3] else 0] + c[4:]) for c in table_snap["columns"]}
 
 
-def _tables_equal(a: dict, b: dict) -> bool:
-    return _col_set(a) == _col_set(b) and a["rows"] == b["rows"]
+def _tables_equal(a: dict, b: dict, *, compare_constraints: bool = True,
+                  ordered_pk: bool = True) -> bool:
+    same = _col_set(a, ordered_pk) == _col_set(b, ordered_pk) and a["rows"] == b["rows"]
+    if compare_constraints:
+        same = same and a.get("constraints", {}) == b.get("constraints", {})
+    return same
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +491,8 @@ class StateDiff:
     tables_missing: list = field(default_factory=list)   # in gold, not in student
     tables_extra: list = field(default_factory=list)     # in student, not in gold
     column_diffs: dict = field(default_factory=dict)     # {table: {"missing":[...], "extra":[...]}}
+    constraint_diffs: dict = field(default_factory=dict) # {table: missing/extra UNIQUE/FK/CHECK}
+    object_diffs: dict = field(default_factory=dict)     # missing/extra/changed VIEW/INDEX/TRIGGER
     row_diffs: dict = field(default_factory=dict)        # {table: {n_student,n_gold,n_missing,n_extra,extra_sample}}
     no_effect: bool = False                              # student post == student pre, gold's differs
 
@@ -226,10 +502,9 @@ class StateDiff:
         student's own extra rows."""
         if self.sql_error:
             return f"Your statement did not run: {self.sql_error}"
-        if self.no_effect:
-            return ("Your statement left the database unchanged, but the correct answer changes "
-                    "it. Re-read what the question asks you to add, modify, or remove.")
         L = ["Comparing the database state after your statement:"]
+        if self.no_effect:
+            L.append("- your statement left the database unchanged, but the correct answer changes it")
         if self.tables_missing:
             L.append(f"- table(s) the correct answer has but yours does not: "
                      f"{', '.join(self.tables_missing)}")
@@ -244,6 +519,34 @@ class StateDiff:
                 bits.append(f"unexpected column(s) {', '.join(cd['extra'])}")
             if bits:
                 L.append(f"- table `{t}`: {'; '.join(bits)}")
+        for t, cd in self.constraint_diffs.items():
+            bits = []
+            for cols in cd.get("missing_unique", []):
+                bits.append(f"missing required UNIQUE constraint on ({', '.join(cols)})")
+            for cols in cd.get("extra_unique", []):
+                bits.append(f"unexpected UNIQUE constraint on ({', '.join(cols)})")
+            if cd.get("missing_foreign_keys"):
+                bits.append(f"missing {len(cd['missing_foreign_keys'])} required FOREIGN KEY constraint(s)")
+            if cd.get("extra_foreign_keys"):
+                bits.append(f"has {len(cd['extra_foreign_keys'])} unexpected FOREIGN KEY constraint(s)")
+            if cd.get("missing_checks"):
+                bits.append(f"missing {len(cd['missing_checks'])} required CHECK constraint(s)")
+            if cd.get("extra_checks"):
+                bits.append(f"has {len(cd['extra_checks'])} unexpected CHECK constraint(s)")
+            if cd.get("missing_generated"):
+                names = ", ".join(x.get("name", "?") for x in cd["missing_generated"])
+                bits.append(f"generated column(s) {names} are missing or use the wrong expression/storage mode")
+            if cd.get("extra_generated"):
+                names = ", ".join(x.get("name", "?") for x in cd["extra_generated"])
+                bits.append(f"unexpected generated column definition(s) for {names}")
+            if bits:
+                L.append(f"- table `{t}`: {'; '.join(bits)}")
+        for obj in self.object_diffs.get("missing", []):
+            L.append(f"- missing required {obj['type'].upper()} `{obj['name']}`")
+        for obj in self.object_diffs.get("extra", []):
+            L.append(f"- unexpected {obj['type'].upper()} `{obj['name']}`")
+        for obj in self.object_diffs.get("changed", []):
+            L.append(f"- {obj['type'].upper()} `{obj['name']}` has the wrong definition")
         for t, rd in self.row_diffs.items():
             seg = (f"- table `{t}`: has {rd['n_student']} row(s), the correct answer has "
                    f"{rd['n_gold']}")
@@ -287,23 +590,57 @@ def _compare_states(seed: int, gold: dict, student: dict, pre: dict) -> StateSee
     tables_extra = sorted(snames - gnames)
 
     column_diffs: dict = {}
+    constraint_diffs: dict = {}
+    object_diffs: dict = {}
     row_diffs: dict = {}
+    # Published before schema snapshot v2 did not bake constraint metadata. Keep those bundles
+    # gradeable with their historical semantics; republishing upgrades them to full checks.
+    schema_v2 = int(gold.get("snapshot_version", 1)) >= 2
+    if "objects" in gold:
+        gold_objects = {(x["type"], x["name"]): x for x in gold.get("objects", [])}
+        student_objects = {(x["type"], x["name"]): x for x in student.get("objects", [])}
+        missing_keys = sorted(gold_objects.keys() - student_objects.keys())
+        extra_keys = sorted(student_objects.keys() - gold_objects.keys())
+        changed_keys = sorted(k for k in gold_objects.keys() & student_objects.keys()
+                              if gold_objects[k] != student_objects[k])
+        if missing_keys:
+            object_diffs["missing"] = [gold_objects[k] for k in missing_keys]
+        if extra_keys:
+            object_diffs["extra"] = [student_objects[k] for k in extra_keys]
+        if changed_keys:
+            object_diffs["changed"] = [gold_objects[k] for k in changed_keys]
     for t in sorted(gnames & snames):
         gt, st = gtabs[t], stabs[t]
         gcols = {c[0] for c in gt["columns"]}
         scols = {c[0] for c in st["columns"]}
         miss_c = sorted(gcols - scols)
         extra_c = sorted(scols - gcols)
-        if miss_c or extra_c or _col_set(gt) != _col_set(st):
+        if miss_c or extra_c or _col_set(gt, schema_v2) != _col_set(st, schema_v2):
             cd = {}
             if miss_c:
                 cd["missing"] = miss_c
             if extra_c:
                 cd["extra"] = extra_c
             # column SETS differ but names match -> a type/constraint difference; surface it
-            if not cd and _col_set(gt) != _col_set(st):
+            if not cd and _col_set(gt, schema_v2) != _col_set(st, schema_v2):
                 cd["missing"] = []   # placeholder so the table is flagged as differing
             column_diffs[t] = cd
+        if schema_v2:
+            gc = gt.get("constraints", {})
+            sc = st.get("constraints", {})
+            c_diff = {}
+            for key, label in (("unique", "unique"), ("foreign_keys", "foreign_keys"),
+                               ("checks", "checks"), ("generated", "generated")):
+                gold_items = {json.dumps(x, sort_keys=True) for x in gc.get(key, [])}
+                student_items = {json.dumps(x, sort_keys=True) for x in sc.get(key, [])}
+                missing = [json.loads(x) for x in sorted(gold_items - student_items)]
+                extra = [json.loads(x) for x in sorted(student_items - gold_items)]
+                if missing:
+                    c_diff[f"missing_{label}"] = missing
+                if extra:
+                    c_diff[f"extra_{label}"] = extra
+            if c_diff:
+                constraint_diffs[t] = c_diff
         # row comparison (canonical multisets compared as sorted lists)
         if gt["rows"] != st["rows"]:
             from collections import Counter
@@ -331,20 +668,29 @@ def _compare_states(seed: int, gold: dict, student: dict, pre: dict) -> StateSee
                 "extra_sample": extra_sample,   # STUDENT-only rows only
             }
 
-    ok = (not tables_missing and not tables_extra and not column_diffs and not row_diffs)
+    ok = (not tables_missing and not tables_extra and not column_diffs
+          and not constraint_diffs and not object_diffs and not row_diffs)
     if ok:
         return StateSeedResult(seed, True)
     # no-effect detection: student didn't change anything, but gold does
     no_effect = (_states_equal(student, pre) and not _states_equal(gold, pre))
     return StateSeedResult(seed, False, StateDiff(
         seed=seed, tables_missing=tables_missing, tables_extra=tables_extra,
-        column_diffs=column_diffs, row_diffs=row_diffs, no_effect=no_effect))
+        column_diffs=column_diffs, constraint_diffs=constraint_diffs,
+        object_diffs=object_diffs, row_diffs=row_diffs, no_effect=no_effect))
 
 
 def _states_equal(a: dict, b: dict) -> bool:
     if set(a["tables"]) != set(b["tables"]):
         return False
-    return all(_tables_equal(a["tables"][t], b["tables"][t]) for t in a["tables"])
+    compare_constraints = (int(a.get("snapshot_version", 1)) >= 2
+                           and int(b.get("snapshot_version", 1)) >= 2)
+    tables_equal = all(_tables_equal(a["tables"][t], b["tables"][t],
+                                     compare_constraints=compare_constraints,
+                                     ordered_pk=compare_constraints) for t in a["tables"])
+    objects_equal = (a.get("objects", []) == b.get("objects", [])
+                     if "objects" in a and "objects" in b else True)
+    return tables_equal and objects_equal
 
 
 # --------------------------------------------------------------------------- #
@@ -393,6 +739,10 @@ def error_category_state(gr: StateGradeResult) -> str | None:
         return "table missing"
     if d.tables_extra:
         return "unexpected table — should it be gone?"
+    if d.constraint_diffs:
+        return "wrong constraints"
+    if d.object_diffs:
+        return "wrong schema object"
     if d.column_diffs:
         return "wrong columns"
     if d.no_effect:
@@ -424,6 +774,8 @@ def diff_payload_state(gr: StateGradeResult, cap: int = 5) -> dict | None:
         "tables_missing": list(d.tables_missing),
         "tables_extra": list(d.tables_extra),
         "column_diffs": d.column_diffs,
+        "constraint_diffs": d.constraint_diffs,
+        "object_diffs": d.object_diffs,
         "row_diffs": row_diffs,
         "no_effect": d.no_effect,
         "text": d.to_text(cap=cap),
@@ -499,10 +851,11 @@ def family_for_state(gr: StateGradeResult) -> str | None:
     d = gr.first_fail.diff
     if d.sql_error:
         return "error"
+    if (d.tables_missing or d.tables_extra or d.column_diffs or d.constraint_diffs
+            or d.object_diffs):
+        return "schema"
     if d.no_effect:
         return "no_effect"
-    if d.tables_missing or d.tables_extra or d.column_diffs:
-        return "schema"
     return "rows"
 
 
