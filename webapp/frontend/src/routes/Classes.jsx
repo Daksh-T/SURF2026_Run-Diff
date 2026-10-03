@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import QRCode from "qrcode";
+import { exportJson } from "../lib/exports.js";
 import { api } from "../lib/api.js";
 import SessionControls from "../components/SessionControls.jsx";
 
@@ -85,7 +85,7 @@ function SyncSettings() {
   const [pick, setPick] = useState("");          // chosen LAN url (one-click host)
   const [manual, setManual] = useState(false);   // manual-URL editor open
   const [url, setUrl] = useState("");            // manual-URL field
-  const [qr, setQr] = useState(null);            // data-URL for the QR image
+  const addressRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
@@ -96,10 +96,16 @@ function SyncSettings() {
     api.hostInfo().then((h) => { setHost(h); setPick((h.lan_urls || [])[0] || ""); }).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (saved) QRCode.toDataURL(saved, { margin: 1, width: 168 }).then(setQr).catch(() => setQr(null));
-    else setQr(null);
-  }, [saved]);
+  async function copyAddress() {
+    try {
+      await navigator.clipboard.writeText(saved);
+      setMsg("✓ Address copied — paste it into your class chat or email.");
+    } catch {
+      addressRef.current?.focus();
+      addressRef.current?.select();
+      setMsg("Press Ctrl+C (⌘C on Mac) to copy the selected address.");
+    }
+  }
 
   async function persist(value) {
     setBusy(true); setMsg(null);
@@ -128,25 +134,23 @@ function SyncSettings() {
         </span>
         <span className="cls-item-meta" style={{ flex: 1, minWidth: 220 }}>
           {on
-            ? <>Students on this network can connect and push attempts live. The address is also baked into exported assignment files as a backup.</>
-            : <>Classes sync by file: students export an attempts file, you import it. Host this machine on your LAN for live sync.</>}
+            ? <>Students on this network can connect and push attempts live. Share an assignment file with the address included as a backup.</>
+            : <>Students export an attempts file, then you import it. Host on this network for live sync.</>}
         </span>
-        {msg && <span className="cls-item-meta">{msg}</span>}
+        {msg && <span className="cls-item-meta" role="status">{msg}</span>}
       </div>
 
       {on ? (
         <div className="netsync-live">
-          <div className="netsync-qr">
-            {qr ? <img src={qr} alt="QR of the class server address" width={140} height={140} /> : null}
-          </div>
           <div className="netsync-live-body">
             <div className="netsync-url-label">Class server address</div>
-            <div className="netsync-url mono">{saved}</div>
+            <input ref={addressRef} className="input mono" aria-label="Class server address" value={saved} readOnly onFocus={(e) => e.target.select()} />
             <div className="cls-item-meta" style={{ marginTop: 6 }}>
               Students: open <b>Practice → Connect to class server</b>, enter this address and their
               class code (or personal passcode). Same Wi-Fi/LAN required.
             </div>
             <div className="cls-row" style={{ marginTop: 10, gap: 8 }}>
+              <button className="btn sm primary" onClick={copyAddress}>Copy address</button>
               <button className="btn sm ghost" onClick={() => setManual((v) => !v)}>Change address</button>
               <button className="btn sm danger" onClick={() => persist("")} disabled={busy}>Turn off</button>
             </div>
@@ -482,12 +486,7 @@ function ClassRow({ cls: c, published, onChanged }) {
 
   async function exportAssignment() {
     try {
-      const data = await api.exportAssignment(c.id);
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${c.id}-assignment.json`; a.click();
-      URL.revokeObjectURL(url);
+      await exportJson(() => api.exportAssignment(c.id), `${c.id}-assignment.json`);
     } catch (e) {
       alert("Export failed: " + e.message);
     }

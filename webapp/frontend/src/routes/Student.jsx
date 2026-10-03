@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { exportJson } from "../lib/exports.js";
 import { api } from "../lib/api.js";
 import SqlEditor from "../components/SqlEditor.jsx";
 import HintLadder from "../components/HintLadder.jsx";
@@ -222,14 +223,7 @@ export default function Student() {
   async function doExportAttempts() {
     if (!cls) return;
     try {
-      const data = await api.attemptsExport(cls.class_id);
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${cls.class_id}-attempts.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await exportJson(() => api.attemptsExport(cls.class_id), `${cls.class_id}-attempts.json`);
     } catch (e) {
       setSyncMsg(e.message);
       setTimeout(() => setSyncMsg(null), 5000);
@@ -383,7 +377,7 @@ export default function Student() {
               />
             </div>
             <div className="field" style={{ textAlign: "left" }}>
-              <label>Class server address <span className="hint-line">— optional; on the same Wi-Fi as your instructor</span></label>
+              <label>Class server address</label>
               <input
                 className="input"
                 placeholder="http://192.168.1.5:8077"

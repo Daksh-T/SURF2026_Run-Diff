@@ -1,13 +1,13 @@
-"""App-wide config: author password (sha256 of the plaintext, never the plaintext) and the
-instructor's public sync URL (used by the assignment export/import + attempt-sync flow).
+"""Persist the author password hash, class sync URL, and optional Groq API key locally.
 
-  data/config.json   {"author_password_sha256": str|null, "instructor_url": str|null}
-
-Follows store.py's _read/_write conventions; reuses them directly.
+Use atomic replacement and owner-only permissions when saving credentials.
 """
 from __future__ import annotations
 
 import store
+import json
+import os
+import tempfile
 
 CONFIG_PATH = store.DATA / "config.json"
 
@@ -22,7 +22,16 @@ def load() -> dict:
 
 
 def save(cfg: dict) -> dict:
-    store._write(CONFIG_PATH, cfg)
+    # Create the replacement with owner-only permissions before writing the API key.
+    with tempfile.NamedTemporaryFile(mode="w", dir=CONFIG_PATH.parent, delete=False) as output:
+        temporary = output.name
+        try:
+            json.dump(cfg, output, indent=2)
+            output.close()
+            os.replace(temporary, CONFIG_PATH)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return cfg
 
 

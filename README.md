@@ -128,8 +128,9 @@ uv run python run_server.py
 
 Then open `http://127.0.0.1:8077`.
 
-The default authoring provider needs `groq_api_key` in a repo-root `.env` file or in the process
-environment. Student practice, grading, and offline hints do not need that key. See
+For default authoring, enter a Groq key through **Author → API key**, or set `groq_api_key` in
+a repo-root `.env` file or the process environment. You do not need that key for student
+practice, grading, or offline hints. See
 [Configuration](CONFIGURATION.md#api-keys-and-env) for an exact example.
 
 ## Validate a change

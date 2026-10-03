@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{Manager, RunEvent};
+use tauri_plugin_dialog::DialogExt;
 
 const HOST: &str = "127.0.0.1"; // the window + health checks always talk to loopback
                                 // Bind the backend to all interfaces so other devices on the LAN can reach it when the
@@ -27,6 +28,60 @@ const PORT: u16 = 8077;
 /// Holds the backend child process — Some only if WE spawned it (nil when we reused an
 /// already-running server, so quit never kills someone else's backend).
 struct Backend(Mutex<Option<Child>>);
+
+#[derive(Default)]
+struct ExportState {
+    directory: Mutex<Option<PathBuf>>,
+    pending: Mutex<bool>,
+}
+
+#[tauri::command]
+async fn save_export(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ExportState>,
+    filename: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    let url = window.url().map_err(|_| "Could not export this file.")?;
+    let extension = Path::new(&filename).extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if window.label() != "main" || url.scheme() != "http" || url.host_str() != Some(HOST)
+        || url.port() != Some(PORT) || filename.contains(['/', '\\', ':', '\0'])
+        || !["json", "csv"].contains(&extension.as_str()) {
+        return Err("Could not export this file.".into());
+    }
+    {
+        let mut pending = state.pending.lock().unwrap();
+        if *pending {
+            return Err("Finish the open save dialog first.".into());
+        }
+        *pending = true;
+    }
+    let result = (|| {
+        let mut picker = app.dialog().file().set_parent(&window).set_title("Export file")
+            .set_file_name(&filename).add_filter(extension.to_uppercase(), &[&extension]);
+        let directory = state.directory.lock().unwrap().clone().or_else(|| app.path().download_dir().ok());
+        if let Some(directory) = directory {
+            picker = picker.set_directory(directory);
+        }
+        let Some(selected) = picker.blocking_save_file() else {
+            return Ok(serde_json::json!({ "cancelled": true }));
+        };
+        let path = selected.into_path().map_err(|_| "Could not save the export.")?;
+        let parent = path.parent().ok_or("Could not save the export.")?;
+        // Stage alongside the destination so replacement is atomic, including on Windows.
+        let mut output = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Could not save the export. Check folder access and available space.")?;
+        output.write_all(content.as_bytes()).map_err(|_| "Could not save the export. Check folder access and available space.")?;
+        output.persist(&path).map_err(|_| "Could not save the export. Check folder access and available space.")?;
+        *state.directory.lock().unwrap() = Some(parent.to_path_buf());
+        Ok(serde_json::json!({
+            "filename": path.file_name().unwrap_or_default().to_string_lossy(),
+            "location": parent.file_name().unwrap_or(parent.as_os_str()).to_string_lossy(),
+        }))
+    })();
+    *state.pending.lock().unwrap() = false;
+    result
+}
 
 fn base() -> String {
     format!("http://{HOST}:{PORT}")
@@ -176,6 +231,9 @@ fn kill_backend(app: &tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![save_export])
+        .manage(ExportState::default())
         .manage(Backend(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();

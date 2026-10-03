@@ -796,3 +796,11 @@ textarea.input.mono { font-family: var(--font-mono); font-size: 14px; line-heigh
   border-bottom: 1px solid var(--line);
 }
 .live-ticker-row:last-child { border-bottom: none; }
+
+.author-settings { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-left: auto; }
+.api-key-settings { position: relative; }
+.api-key-settings > .btn { min-height: 40px; }
+.api-key-form { position: absolute; z-index: 50; top: calc(100% + 8px); right: 0; width: min(360px, 85vw); padding: 20px; box-shadow: 0 8px 30px rgba(0, 0, 0, .14); }
+.export-notice { position: fixed; z-index: 100; bottom: 24px; right: 24px; display: flex; align-items: center; gap: 14px; max-width: min(520px, calc(100vw - 48px)); padding: 16px 20px; border-radius: 12px; background: var(--paper, #fffdf8); color: var(--ink, #25251f); box-shadow: 0 6px 30px rgba(0, 0, 0, .18); overflow-wrap: anywhere; }
+.export-check { color: #28734a; font-size: 26px; }
+.export-notice strong { display: block; margin-bottom: 4px; }

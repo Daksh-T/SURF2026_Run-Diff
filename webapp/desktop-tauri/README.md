@@ -14,6 +14,11 @@ of bundling Chromium + Node like the Electron shell in [`../desktop`](../desktop
 macOS keeps the Swift shell (proven, no Rust needed). This Tauri shell gives the project its
 **first Windows build** and a lean Linux build, both from one Rust codebase.
 
+When exporting sets, assignments, attempts, or analytics CSVs, choose the filename and
+folder through the system Save dialog. After saving, check the completion notice for the
+actual filename and directory. Cancel to return without saving, or confirm replacement
+when choosing an existing file.
+
 ## How it works
 
 Same behavior as the other two shells (see [`src-tauri/src/main.rs`](src-tauri/src/main.rs)):

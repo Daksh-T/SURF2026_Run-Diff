@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { exportJson } from "../lib/exports.js";
 import { api } from "../lib/api.js";
 import { DataTable, Schema } from "../components/bits.jsx";
 
@@ -144,7 +145,7 @@ export default function Instructor() {
     for (let s = 0; s < sections.length; s++) {
       const sec = sections[s];
       if (!sec.tableHint.trim()) {
-        setBanner({ kind: "err", text: `Section ${s + 1}: describe what the table(s) hold.` });
+        setBanner({ kind: "err", text: `Section ${s + 1}: enter a table schema.` });
         return;
       }
       const bad = sec.items.findIndex((it) => !it.title.trim() || !it.prompt.trim() || !it.gold_sql.trim());
@@ -301,13 +302,11 @@ export default function Instructor() {
   }
 
   async function exportSet() {
-    const data = await api.exportSet(setId);
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${data.id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await exportJson(() => api.exportSet(setId), `${setId}.json`);
+    } catch (e) {
+      setBanner({ kind: "err", text: `Export failed: ${e.message}` });
+    }
   }
 
   async function importSetFile(e) {
@@ -335,7 +334,6 @@ export default function Instructor() {
       <aside className="rail">
         <div className="rail-head">
           <h2>Your sets</h2>
-          <div className="rail-sub">Author problems, then publish a set for practice.</div>
           <button className="btn sm" onClick={() => importRef.current?.click()}>Import set</button>
         </div>
         <ul className="plist">
@@ -393,12 +391,12 @@ export default function Instructor() {
               <div className="prompt-block">
                 <h1>Author a problem</h1>
                 <p className="prompt-text" style={{ fontSize: 15 }}>
-                  Write what you'd write to set an exam — the question and the answer. The model builds
-                  the schema and the test data; you never write either.
+                  Write what you'd write to set an exam — the question and the answer. Generate
+                  the schema and the test data with AI.
                 </p>
-                <div className="run-hint" style={{ marginTop: 6 }}>
-                  {targetSet ? <>adding to: <b>{targetSet.title}</b></> : "no set yet — one will be created"}
-                </div>
+                {targetSet && <div className="run-hint" style={{ marginTop: 6 }}>
+                  adding to: <b>{targetSet.title}</b>
+                </div>}
               </div>
 
               <div className="batch-mode-switch">
@@ -457,7 +455,6 @@ export default function Instructor() {
                 <div>
                   {!running && (
                     <div className="card" style={{ padding: 20, color: "var(--muted)" }}>
-                      <div className="eyebrow" style={{ marginBottom: 8 }}>What you'll get</div>
                       <p className="prompt-text" style={{ fontSize: 14.5 }}>
                         An inferred schema, the SQL features it exercises, any plain-English edge-case
                         questions worth confirming, and a preview of the seeded data with your gold
@@ -491,7 +488,7 @@ export default function Instructor() {
                     )}
                   </div>
                   <div className="field">
-                    <label>What the table(s) hold <span className="hint-line">— this section's own schema</span></label>
+                    <label>Section table schema</label>
                     <textarea className="input" rows={2} value={sec.tableHint} onChange={(e) => updateSectionHint(s, e.target.value)}
                       placeholder="a library books table: book_id, title, author, year, copies" />
                   </div>
