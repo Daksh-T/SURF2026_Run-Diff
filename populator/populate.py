@@ -35,8 +35,6 @@ from problems import bank
 HERE = Path(__file__).resolve().parent
 GEN_DIR = HERE / "generators"
 RUN_DIR = HERE / "runs"
-GEN_DIR.mkdir(exist_ok=True)
-RUN_DIR.mkdir(exist_ok=True)
 
 DEFAULT_SEEDS = list(range(1, 9))   # K=8 during authoring
 
@@ -413,6 +411,7 @@ def main():
         probs = [bank.get(pid.strip()) for pid in args.problems.split(",")]
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     log_path = RUN_DIR / f"{args.model}_{stamp}.jsonl"
     print(f"model={args.model}  K={args.k}  attempts={args.attempts}  problems={len(probs)}")
     print(f"log -> {log_path}\n")
