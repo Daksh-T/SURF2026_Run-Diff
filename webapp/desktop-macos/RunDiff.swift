@@ -10,6 +10,7 @@
 
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 let HOST = "127.0.0.1"        // the window + health checks always talk to loopback
 // Bind the backend to all interfaces so other devices on the LAN can reach it when the
@@ -70,10 +71,12 @@ func waitForHealth(timeoutMs: Int = 30000) -> Bool {
 
 // MARK: - App delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandlerWithReply {
     var window: NSWindow!
     var webView: WKWebView!
     var backend: Process?   // set only if WE spawn it; nil if we reused an existing server
+    var exportPanel: NSSavePanel?
+    var exportDirectory: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -109,6 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         window.center()
 
         let config = WKWebViewConfiguration()
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "rundiffExport")
         webView = WKWebView(frame: frame, configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self                       // drives <input type=file> open panels
@@ -205,7 +209,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
     }
 
-    // MARK: - Downloads (exports: <a download> on blob: URLs and backend CSV/JSON endpoints)
+    // MARK: - Export save dialog
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        let origin = message.frameInfo.securityOrigin
+        guard message.frameInfo.isMainFrame, origin.protocol == "http",
+              origin.host == HOST, origin.port == PORT,
+              let payload = message.body as? [String: String],
+              let filename = payload["filename"], let content = payload["content"],
+              filename == (filename as NSString).lastPathComponent,
+              ["json", "csv"].contains((filename as NSString).pathExtension.lowercased()) else {
+            replyHandler(nil, "Could not export this file.")
+            return
+        }
+        guard exportPanel == nil else {
+            replyHandler(nil, "Finish the open save dialog first.")
+            return
+        }
+        let panel = NSSavePanel()
+        exportPanel = panel
+        panel.title = "Export file"
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = filename
+        panel.directoryURL = exportDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.allowedContentTypes = [(filename as NSString).pathExtension.lowercased() == "csv" ? .commaSeparatedText : .json]
+        panel.beginSheetModal(for: window) { response in
+            self.exportPanel = nil
+            guard response == .OK, let destination = panel.url else {
+                replyHandler(["cancelled": true], nil)
+                return
+            }
+            do {
+                // Atomic replacement preserves an earlier export if writing fails.
+                try Data(content.utf8).write(to: destination, options: .atomic)
+                let directory = destination.deletingLastPathComponent()
+                self.exportDirectory = directory
+                replyHandler(["filename": destination.lastPathComponent, "location": directory.lastPathComponent], nil)
+            } catch {
+                replyHandler(nil, "Could not save the export. Check folder access and available space.")
+            }
+        }
+    }
+
+    // MARK: - Downloads (other attachments)
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences,

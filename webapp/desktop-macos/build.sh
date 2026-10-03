@@ -80,6 +80,10 @@ if [ "${1:-}" = "--dmg" ]; then
   DMG="$OUT/$APP_NAME.dmg"
   echo "==> Building compressed DMG (ULMO/LZMA)"
   rm -f "$DMG"
-  hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format ULMO "$DMG" >/dev/null
+  STAGING="$(mktemp -d "$OUT/dmg-stage.XXXXXX")"
+  trap 'rm -rf "$STAGING"' EXIT
+  cp -R "$APP" "$STAGING/"
+  ln -s /Applications "$STAGING/Applications"
+  hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format ULMO "$DMG" >/dev/null
   du -sh "$DMG"
 fi

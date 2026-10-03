@@ -20,6 +20,9 @@ async function j(method, path, body) {
 }
 
 export const api = {
+  apiKeyStatus: () => j("GET", "/api/instructor/api-key"),
+  saveApiKey: (api_key) => j("PUT", "/api/instructor/api-key", { api_key }),
+  saveExport: (filename, content) => j("POST", "/api/exports", { filename, content }),
   // auth
   authStatus: () => j("GET", "/api/auth/status"),
   authSet: (password, current) => j("POST", "/api/auth/set", { password, current }),

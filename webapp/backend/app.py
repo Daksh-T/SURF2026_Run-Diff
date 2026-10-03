@@ -19,6 +19,7 @@ import os
 import socket
 import threading
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,6 +38,10 @@ import setup_ollama
 import static
 import store
 import tutor_core as tc
+import providers
+
+if config.get("groq_api_key"):
+    providers.GROQ_KEY = config.get("groq_api_key")
 
 HINT_MODEL = os.environ.get("TUTOR_HINT_MODEL", "qwen7b")       # local Ollama
 AUTHOR_MODEL = os.environ.get("TUTOR_AUTHOR_MODEL", "groq")     # cloud, no student data
@@ -720,6 +725,64 @@ def instructor_set_config(req: ConfigReq):
     url = (req.instructor_url or "").strip()
     config.set("instructor_url", url or None)
     return {"instructor_url": config.load().get("instructor_url")}
+
+
+@instructor_router.get("/api-key")
+def api_key_status():
+    return {"configured": bool(providers.GROQ_KEY)}
+
+
+class ApiKeyReq(BaseModel):
+    api_key: str
+
+
+@instructor_router.put("/api-key")
+def save_api_key(req: ApiKeyReq):
+    key = req.api_key.strip()
+    if not key or any(c.isspace() for c in key) or len(key) > 512:
+        raise HTTPException(400, "Enter a valid Groq API key without spaces.")
+    try:
+        config.set("groq_api_key", key)
+    except OSError:
+        raise HTTPException(500, "Could not save the API key. Check folder access and available space.")
+    providers.GROQ_KEY = key
+    return {"configured": True}
+
+
+class ExportReq(BaseModel):
+    filename: str
+    content: str
+
+
+@app.post("/api/exports", dependencies=[Depends(require_local)])
+def save_export(req: ExportReq):
+    # Local desktop exports only. Never accept a directory or overwrite an existing file.
+    name = req.filename
+    if (not name or len(name) > 200 or any(c in name for c in '/\\\\:\x00')
+            or Path(name).suffix.lower() not in {".json", ".csv"}):
+        raise HTTPException(400, "Choose a JSON or CSV filename without a directory.")
+    directory = Path.home() / "Downloads"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        candidate = directory / name
+        index = 0
+        while True:
+            try:
+                output = candidate.open("x", encoding="utf-8")
+            except FileExistsError:
+                index += 1
+                candidate = directory / f"{Path(name).stem} ({index}){Path(name).suffix}"
+                continue
+            try:
+                with output:
+                    output.write(req.content)
+            except OSError:
+                candidate.unlink(missing_ok=True)
+                raise
+            break
+        return {"filename": candidate.name, "location": directory.name}
+    except OSError:
+        raise HTTPException(500, "Could not save to Downloads. Check folder access and available space.")
 
 
 def _lan_ipv4s() -> list[str]:

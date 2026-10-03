@@ -32,7 +32,14 @@ bun run build:backend    # -> ../backend/dist_backend/rundiff-backend
 
 # then here:
 ./build.sh               # -> release/Run·Diff.app
+./build.sh --dmg         # -> release/Run·Diff.dmg
 ```
+
+Open the DMG and drag **Run·Diff.app** onto the **Applications** shortcut to install it.
+
+When exporting, choose the filename and folder through the native Save dialog. After saving,
+check the completion notice for the actual filename and directory. Cancel to return without
+saving, or confirm replacement when choosing an existing file.
 
 The app is **unsigned** (ad-hoc codesign only) — same as the Electron build, since no Developer ID
 identity is configured. First launch may need right-click → Open.

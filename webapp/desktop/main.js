@@ -4,7 +4,7 @@
 // packaged sidecar binary, or `uv run` in dev), poll /api/health, then open a window at the
 // backend (which serves the built frontend). Quit kills only a backend WE spawned.
 
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const { spawn } = require("child_process");
 const http = require("http");
 const path = require("path");
@@ -20,6 +20,42 @@ const BASE = `http://${HOST}:${PORT}`;
 
 let backendProc = null; // set only if we spawn it; if we reuse an existing server, stays null
 let mainWindow = null;
+let exportDirectory = null;
+let exporting = false;
+
+ipcMain.handle("rundiff:save-export", async (event, { filename, content }) => {
+  // Only the local main frame may request a dialog, never an iframe or remote navigation.
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame
+      || new URL(event.senderFrame.url).origin !== BASE
+      || typeof filename !== "string" || typeof content !== "string"
+      || /[/\\\x00]/.test(filename) || !/\.(json|csv)$/i.test(filename)) {
+    throw new Error("Could not export this file.");
+  }
+  if (exporting) throw new Error("Finish the open save dialog first.");
+  exporting = true;
+  try {
+    const extension = path.extname(filename).slice(1).toLowerCase();
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: "Export file",
+      defaultPath: path.join(exportDirectory || app.getPath("downloads"), filename),
+      filters: [{ name: extension === "csv" ? "CSV" : "JSON", extensions: [extension] }],
+      properties: ["createDirectory", "showOverwriteConfirmation"],
+    });
+    if (canceled || !filePath) return { cancelled: true };
+    const temporary = await fs.promises.mkdtemp(path.join(path.dirname(filePath), ".rundiff-export-"));
+    try {
+      const staged = path.join(temporary, "export");
+      await fs.promises.writeFile(staged, content, "utf8");
+      await fs.promises.rename(staged, filePath);
+    } finally {
+      await fs.promises.rm(temporary, { recursive: true, force: true });
+    }
+    exportDirectory = path.dirname(filePath);
+    return { filename: path.basename(filePath), location: path.basename(exportDirectory) };
+  } finally {
+    exporting = false;
+  }
+});
 
 function httpOk(url) {
   return new Promise((resolve) => {
@@ -110,7 +146,7 @@ function createWindow() {
     minHeight: 600,
     title: "Run·Diff",
     backgroundColor: "#f4f0e6", // warm-paper, so first paint isn't a white flash
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") },
   });
   mainWindow.loadURL(`${BASE}/practice`);
   mainWindow.on("closed", () => {

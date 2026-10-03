@@ -14,7 +14,7 @@ architecture and repository layout.
 This is the normal option for students and instructors. Obtain the installer from your instructor
 or the project's Releases page:
 
-- **macOS:** install the `.dmg` build. It uses the system WKWebView.
+- **macOS:** open the `.dmg` and drag **Run·Diff** onto the **Applications** shortcut.
 - **Windows:** install the `.msi` or setup `.exe`. It uses WebView2.
 - **Linux:** make the `.AppImage` executable and run it. It uses WebKitGTK.
 
@@ -197,14 +197,21 @@ work first.
 The default authoring model is Groq's `qwen/qwen3.6-27b`. You need internet access and a Groq API
 key to infer schemas and generate robust data generators.
 
-For a source checkout, create `.env` in the repository root:
+Open **Author → API key**, enter your Groq API key, and select **Save key**. You can replace
+the key from the same control. After saving, you can author immediately and use the saved
+key after restarting. Unlock Author first if you have set an author password.
+
+You save the key locally in the installation's settings. Keep it private and protect your
+data-directory backup. Students do not need a cloud key.
+
+For a source checkout, you can alternatively create `.env` in the repository root:
 
 ```dotenv
 groq_api_key=gsk_...
 ```
 
-Restart the backend after adding the key. A packaged build must inherit the same environment
-variable from the process that starts it, or be used with a separately configured backend.
+Restart the backend after adding an environment key. If you previously saved a key through
+Author, use that saved key in preference to the environment value.
 
 This key is not needed for student grading, published-set practice, classroom management, or local
 hints. Advanced local/cloud model changes are in
@@ -270,7 +277,7 @@ private and later appears beside actual classroom performance in Insights.
 Choose **Whole assignment** when several questions share schemas.
 
 1. Give the assignment a title.
-2. Add one or more sections. Each section has a table/schema description.
+2. Add one or more sections and fill in **Section table schema** for each section.
 3. Add questions within each section, each with its own title, prompt, gold SQL, difficulty, and
    optional exact-column-name requirement.
 4. Choose **Author the assignment**.
@@ -353,7 +360,8 @@ is permanent.
 This is the simplest and most reliable method across different networks.
 
 1. Select **Assignment file** on the classroom card.
-2. Give the downloaded JSON file and the class code/personal passcodes to students.
+2. Choose a filename and folder, save the JSON file, and give it and the class code/personal
+   passcodes to students.
 3. Students load the file and work locally.
 4. Students select **Export attempts** and return their files.
 5. Select **Import attempts** on the matching classroom card.
@@ -365,7 +373,8 @@ Repeated imports are safe; duplicates are ignored.
 1. In the network-sync card, select the correct detected address and **Host on this network**, or
    use **Enter URL manually**.
 2. Allow incoming connections if the operating system firewall asks.
-3. Give students the displayed URL/QR value plus their code.
+3. Select **Copy address**, then give students the class-server address and their code. You
+   can also select the full address in its text field.
 4. Keep Run·Diff running while students connect and sync.
 
 Students must normally be on the same LAN. Campus guest networks often block device-to-device
@@ -390,12 +399,28 @@ Open **Author → Insights** and select a classroom. The overview includes:
 Open a problem to see hint-level use and per-student outcomes. Open a student's name to inspect
 their progression and attempt timeline, including submitted SQL.
 
+Keep the overview, question, or student view open to see new attempts every four seconds.
+When you return to the window, review the latest attempts immediately.
+
 The **Live** view shows a student-by-problem status grid, active-now indicators, summary counts,
 and recent grade/hint activity. It can scope activity to all time, today, the last hour, or the
 current viewing session. The grid refreshes automatically. The recent-activity ticker does not
 show SQL, although detailed instructor timelines do.
 
 Imported or delayed sync events appear in the same analytics as live events.
+
+### Choose where to save exports
+
+When exporting a set, assignment, attempts, or analytics CSV in the desktop app, choose a
+filename and folder through the system Save dialog. You can create a folder, cancel without
+saving, or confirm replacement of an existing file. For later exports during the same
+desktop session, start from your last selected folder.
+
+After saving, look for a check mark and **Export complete**, followed by the actual filename
+and directory name. In Chrome and Edge, choose a folder through the browser picker; for
+repeat exports, use numbered filenames to preserve earlier files. In browsers without
+directory-picker support, find your export in Downloads or use a desktop app to choose
+another folder.
 
 ## 5. Back up or move an installation
 
@@ -419,7 +444,7 @@ a complete replacement for a full data-directory backup.
 | --- | --- |
 | The desktop window never loads | Another process may be using port `8077`, or the bundled backend failed to start. Close other Run·Diff instances and retry. Developers can request `/api/health` on port `8077`. |
 | Practice says there are no sets | Students must join a class whose assigned sets have been published. Authors should publish a non-empty set and assign it to a classroom. |
-| Authoring fails immediately | Confirm internet access, restart after setting `groq_api_key`, and verify the selected author model. Student practice does not diagnose authoring credentials. |
+| Authoring fails immediately | Confirm internet access, enter or replace your key through Author → API key, and verify the selected author model. If using an environment key, restart after setting `groq_api_key`. |
 | Model-written hints are unavailable | Open Setup; confirm Ollama is installed, running at the configured host, and has the displayed model. Built-in hints remain available. |
 | A student cannot join | Check the code, class schedule/archive state, exact roster membership, or whether a personal passcode is required. For network connect, also verify the server address. |
 | A student connects but attempts do not arrive | Confirm hosting remains on, the instructor URL is current, the class is active, and the student is still on the roster. Have the student select Sync or export an attempts file. |

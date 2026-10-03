@@ -7,6 +7,8 @@ import Insights from "./routes/Insights.jsx";
 import Setup from "./routes/Setup.jsx";
 import AuthorGate, { AuthorAuthContext } from "./components/AuthorGate.jsx";
 import TooltipLayer from "./components/Tooltip.jsx";
+import ApiKeySettings from "./components/ApiKeySettings.jsx";
+import ExportNotice from "./components/ExportNotice.jsx";
 import { api } from "./lib/api.js";
 
 const tabClass = ({ isActive }) => "author-tab" + (isActive ? " on" : "");
@@ -31,7 +33,7 @@ function AuthorLayout() {
           <NavLink to="/author/classes" className={tabClass}>Classes</NavLink>
           <NavLink to="/author/insights" className={tabClass}>Insights</NavLink>
         </nav>
-        <AuthorLock />
+        <div className="author-settings"><ApiKeySettings /><AuthorLock /></div>
       </div>
       <Outlet />
     </div>
@@ -180,6 +182,7 @@ export default function App() {
   return (
     <div className="shell">
       <TooltipLayer />
+      <ExportNotice />
       <header className="topbar">
         <span className="wordmark">
           Run<span className="dot">·</span>Diff

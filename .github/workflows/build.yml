@@ -30,11 +30,12 @@ jobs:
           restore-keys: bun-${{ runner.os }}-
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install --frozen-lockfile && bun run build
+        run: bun install --frozen-lockfile && bun test src/lib/exports.test.js && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
           uv sync
+          uv run python -m unittest discover -v
           uv run --with pyinstaller pyinstaller rundiff_backend.spec \
             --noconfirm --distpath dist_backend --workpath build_backend
       - name: Build macOS app
@@ -73,11 +74,12 @@ jobs:
             libayatana-appindicator3-dev patchelf
       - name: Build frontend
         working-directory: webapp/frontend
-        run: bun install --frozen-lockfile && bun run build
+        run: bun install --frozen-lockfile && bun test src/lib/exports.test.js && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         run: |
           uv sync
+          uv run python -m unittest discover -v
           uv run --with pyinstaller pyinstaller rundiff_backend.spec \
             --noconfirm --distpath dist_backend --workpath build_backend
       - name: Stage Tauri resources
@@ -114,12 +116,13 @@ jobs:
       - name: Build frontend
         working-directory: webapp/frontend
         shell: bash
-        run: bun install --frozen-lockfile && bun run build
+        run: bun install --frozen-lockfile && bun test src/lib/exports.test.js && bun run build
       - name: Build backend sidecar
         working-directory: webapp/backend
         shell: bash
         run: |
           uv sync
+          uv run python -m unittest discover -v
           uv run --with pyinstaller pyinstaller rundiff_backend.spec \
             --noconfirm --distpath dist_backend --workpath build_backend
       - name: Stage Tauri resources

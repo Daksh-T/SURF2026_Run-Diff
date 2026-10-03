@@ -43,7 +43,7 @@ At the top of **Author → Classes** is the sync panel:
 - Click **Host on this network**. Run·Diff auto-detects this machine's LAN address and sets it as
   the class-server address. (If several network interfaces are detected, pick the right one from
   the dropdown first — usually your Wi-Fi address.)
-- The panel then shows the **address** and a **QR code** of it.
+- Select the full **Class server address** or use **Copy address** to share it.
 - The first time, macOS may ask *"Do you want the application to accept incoming network
   connections?"* — choose **Allow**. (This is required for students to reach you.)
 
@@ -51,7 +51,7 @@ To use a specific address instead, click **Enter URL manually** (e.g. a fixed IP
 To stop hosting, click **Turn off** — the class reverts to file sync.
 
 ### 3. Share with students
-Give students **two things**: the **class-server address** (read it out, or let them scan the QR)
+Give students **two things**: the **class-server address** (select **Copy address** to copy it)
 and their **class code / passcode**. That's all they need to connect.
 
 Prefer files? **Export the assignment file** from the class card and distribute it — it carries
@@ -68,8 +68,8 @@ have them **Export attempts** and use **Import attempts** on the class card.
 On the **Practice** sign-in screen you always enter your **class code / passcode** and **your
 name**. Then choose how to connect:
 
-1. **Class server address** (optional field) — enter the address your instructor gave you (or scan
-   the QR). The button becomes **Connect**: the assignment downloads over the LAN and attempts
+1. **Class server address** (optional field) — enter the address your instructor gave you.
+   Select **Connect** to download the assignment over the LAN and sync attempts
    sync live. Leave it blank and the button is **Join**, which works when the class already lives
    on this device.
 2. **…or load an assignment file** — if you were given a `.json` file, enter your name and choose
@@ -89,8 +89,8 @@ the file path always works.
   client isolation (a dedicated router / hotspot).
 - **Port 8077.** The class server listens on `8077`. If a firewall blocks it, students get
   "could not reach class server."
-- **Address can change.** A laptop's LAN IP can change between sessions (DHCP). If students can't
-  connect, re-open the sync panel and re-share the current address (the QR always reflects it).
+- **After changing networks.** If students can't connect, re-open the sync panel and use
+  **Copy address** to share the current address.
 - **Find your address manually** (sanity check): macOS `ipconfig getifaddr en0`, or
   System Settings → Wi-Fi → Details.
 

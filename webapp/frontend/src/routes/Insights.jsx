@@ -1,3 +1,4 @@
+import { exportCsv } from "../lib/exports.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { HBar, StackedHBar, StackedLegend, MiniBars } from "../components/charts.jsx";
@@ -190,27 +191,74 @@ export default function Insights() {
   }, []);
 
   useEffect(() => {
-    if (!classId) return;
-    setLoading(true);
-    setErr(null);
     setActiveProblem(null);
     setActiveStudent(null);
     setLiveData(null);
-    api.classAnalytics(classId, setFilter)
-      .then((d) => setData(d))
-      .catch((e) => setErr(e.message))
-      .finally(() => setLoading(false));
   }, [classId, setFilter]);
 
-  // fetch one student's full progression when their name is opened
+  // Refresh the overview and question drill-down without resetting the selection.
   useEffect(() => {
-    if (!activeStudent || !classId) { setStudentDetail(null); return; }
+    if (!classId) return;
+    let alive = true;
+    let pending = false;
+    setData(null);
+    setLoading(true);
+    setErr(null);
+    async function refresh() {
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        const result = await api.classAnalytics(classId, setFilter);
+        if (alive) { setData(result); setErr(null); }
+      } catch (error) {
+        if (alive) setErr(error.message);
+      } finally {
+        pending = false;
+        if (alive) setLoading(false);
+      }
+    }
+    refresh();
+    const timer = setInterval(refresh, 4000);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [classId, setFilter]);
+
+  useEffect(() => {
+    setStudentDetail(null);
+    if (!activeStudent || !classId) return;
+    let alive = true;
+    let pending = false;
     setStudentLoading(true);
     setStudentErr(null);
-    api.classStudent(classId, activeStudent, setFilter)
-      .then((d) => setStudentDetail(d))
-      .catch((e) => setStudentErr(e.message))
-      .finally(() => setStudentLoading(false));
+    async function refresh() {
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        const result = await api.classStudent(classId, activeStudent, setFilter);
+        if (alive) { setStudentDetail(result); setStudentErr(null); }
+      } catch (error) {
+        if (alive) setStudentErr(error.message);
+      } finally {
+        pending = false;
+        if (alive) setStudentLoading(false);
+      }
+    }
+    refresh();
+    const timer = setInterval(refresh, 4000);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
   }, [activeStudent, classId, setFilter]);
 
   // ---- live polling: every 4s while the Live chip is selected, the tab is visible,
@@ -219,25 +267,33 @@ export default function Insights() {
     if (activeProblem !== "live" || !classId) return;
 
     const since = resolveSince(sessionScope, sinceNowAnchor);
+    let alive = true;
+    let pending = false;
 
     const poll = () => {
-      if (document.hidden) return;
+      if (pending || document.hidden) return;
+      pending = true;
       api.classLive(classId, since, setFilter)
         .then((d) => {
+          if (!alive) return;
           setLiveData(d);
           setLiveErr(null);
           setLastUpdated(new Date());
         })
-        .catch((e) => setLiveErr(e.message));
+        .catch((e) => { if (alive) setLiveErr(e.message); })
+        .finally(() => { pending = false; });
     };
 
     poll();
     const interval = setInterval(poll, 4000);
     const onVis = () => { if (!document.hidden) poll(); };
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", poll);
     return () => {
+      alive = false;
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", poll);
     };
   }, [activeProblem, classId, sessionScope, sinceNowAnchor, setFilter]);
 
@@ -569,9 +625,9 @@ export default function Insights() {
                   )}
 
                   <div className="ins-actions">
-                    <a className="btn" href={api.classAnalyticsCsvUrl(classId, setFilter)} download>
+                    <button className="btn" onClick={() => exportCsv(api.classAnalyticsCsvUrl(classId, setFilter), `${classId}-analytics.csv`).catch((e) => setErr(e.message))}>
                       Download CSV
-                    </a>
+                    </button>
                   </div>
                 </>
               ) : active ? (

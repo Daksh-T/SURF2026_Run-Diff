@@ -82,19 +82,22 @@ groq_api_key=gsk_...
 The variable names are intentionally lowercase because that is what the code reads. `.env` is
 ignored by Git. Never commit credentials or include them in an assignment export.
 
-In a packaged desktop build there is no repo-root `.env` beside the source tree. Launch the app
-from an environment containing the key, or configure the key in whatever process manager starts
-a custom backend. A normal student installation needs no cloud key.
+In a desktop build, open **Author → API key**, enter your Groq key, and save it. You can use
+it immediately and after restarting. You save it in `<data>/config.json`; when you have a
+saved key, use it in preference to the environment key. You can also launch the app with an
+environment key or configure a custom backend through its process manager. Students need
+no cloud key.
 
 ## Persistent application settings
 
-`<data>` means the directory selected by `TUTOR_DATA_DIR`. The app stores these two global
-settings in `<data>/config.json`:
+`<data>` means the directory selected by `TUTOR_DATA_DIR`. In `<data>/config.json`, you keep
+these installation-wide settings:
 
 | Field | Default | UI control | Meaning |
 | --- | --- | --- | --- |
 | `author_password_sha256` | `null` | Author toolbar → Set/Change/Remove password | SHA-256 digest of the author password. The plaintext is not stored. `null` means the local Author area is open. |
 | `instructor_url` | `null` | Author → Classes → Host on this network / Enter URL manually / Turn off | Publicly reachable base URL for this class server, such as `http://192.168.1.5:8077`. A non-empty value enables LAN assignment fetch and attempt ingest and is embedded in exported assignments. |
+| `groq_api_key` | unset | Author → API key | Your saved Groq authoring credential. Keep it private, including in backups. In the UI and instructor config responses, you can check whether you configured a key without retrieving its value. |
 
 Example shape—not a recommended way to set a password:
 
